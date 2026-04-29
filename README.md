@@ -1,4 +1,4 @@
-# Forum Afterlife 😇 (Reference Implementation) 🤖
+# Forum Afterlife 😇
 
 Forum Afterlife is a **reference implementation** for turning a quiet Discourse forum into an AI-assisted community loop.
 
