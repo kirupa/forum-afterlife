@@ -1,0 +1,13 @@
+# Sensitive/local runtime files
+.htaccess
+.env
+.env.*
+
+# Runtime state/logs
+.konvo_state/
+_notes/
+error_log
+*.log
+
+# OS/editor
+.DS_Store

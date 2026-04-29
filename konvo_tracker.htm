@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Konvo Tracker</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dde3ea;
+      --ok: #0f766e;
+      --warn: #a16207;
+      --flag: #b91c1c;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.25rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    h1, h2 {
+      margin: 0 0 0.75rem;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 0.65rem;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.65rem;
+      background: #fbfdff;
+    }
+
+    .stat .k {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .stat .v {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+
+    .flag {
+      border: 1px solid #fecaca;
+      background: #fef2f2;
+      color: var(--flag);
+      border-radius: 8px;
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+      display: none;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+    }
+
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 0.5rem 0.35rem;
+      vertical-align: top;
+    }
+
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 0.1rem 0.45rem;
+      font-size: 0.8rem;
+      border: 1px solid;
+      white-space: nowrap;
+    }
+
+    .pill.ok {
+      color: var(--ok);
+      border-color: #99f6e4;
+      background: #f0fdfa;
+    }
+
+    .pill.warn {
+      color: var(--warn);
+      border-color: #fde68a;
+      background: #fffbeb;
+    }
+
+    .pill.flag {
+      color: var(--flag);
+      border-color: #fecaca;
+      background: #fff1f2;
+      display: inline-block;
+      margin-left: 0.35rem;
+    }
+
+    .botlist {
+      font-size: 0.85rem;
+      color: #334155;
+    }
+
+    .btn {
+      border: 1px solid #1e40af;
+      color: #1e3a8a;
+      background: #eef2ff;
+      border-radius: 6px;
+      padding: 0.35rem 0.6rem;
+      cursor: pointer;
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+
+    .btn:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    .btn.alt {
+      border-color: #166534;
+      color: #14532d;
+      background: #ecfdf5;
+      margin-left: 0.35rem;
+    }
+
+    .action-note {
+      margin-top: 0.7rem;
+      font-size: 0.9rem;
+      color: #1f2937;
+      min-height: 1.2rem;
+    }
+
+    .preview-wrap {
+      margin-top: 0.9rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.8rem;
+      background: #f8fbff;
+      display: none;
+    }
+
+    .preview-title {
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .preview-block {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.55rem;
+      background: #fff;
+      margin-bottom: 0.55rem;
+      white-space: pre-wrap;
+      font-size: 0.9rem;
+    }
+
+    .preview-meta {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .preview-reply {
+      width: 100%;
+      min-height: 180px;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.55rem;
+      font: inherit;
+      resize: vertical;
+      margin-bottom: 0.55rem;
+    }
+
+    .preview-actions .btn {
+      margin-right: 0.45rem;
+    }
+
+    @media (max-width: 760px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      table {
+        font-size: 0.88rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Konvo Tracker</h1>
+    <p class="muted">Latest posts only. Reply directly from each post row.</p>
+
+    <div class="card">
+      <div id="globalFlag" class="flag"></div>
+      <div class="grid">
+        <div class="stat"><span class="k">Latest Posts Checked</span><span class="v" id="postsChecked">-</span></div>
+        <div class="stat"><span class="k">Reply Posts</span><span class="v" id="replyPosts">-</span></div>
+        <div class="stat"><span class="k">Thread Creations</span><span class="v" id="threadCreations">-</span></div>
+        <div class="stat"><span class="k">Tracked Bot Events</span><span class="v" id="botEvents">-</span></div>
+      </div>
+      <p class="muted" id="updatedAt" style="margin-top:0.8rem;">Loading...</p>
+    </div>
+
+    <div class="card">
+      <h2>Latest Posts</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Post</th>
+            <th>Author</th>
+            <th>Type</th>
+            <th>Bot Flag</th>
+            <th>Bots In Conversation</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="postsBody"></tbody>
+      </table>
+      <p id="actionNote" class="action-note"></p>
+      <div id="previewWrap" class="preview-wrap">
+        <div class="preview-title">Review Reply Before Posting</div>
+        <div id="previewMeta" class="preview-meta"></div>
+        <div class="muted" style="margin-bottom:0.25rem;">Content being responded to:</div>
+        <div id="previewTarget" class="preview-block"></div>
+        <div class="muted" style="margin-bottom:0.25rem;">Draft reply (editable):</div>
+        <textarea id="previewReply" class="preview-reply"></textarea>
+        <div class="preview-actions">
+          <button id="previewPostBtn" class="btn">Post Edited Reply</button>
+          <button id="previewCancelBtn" class="btn alt" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE = "https://forum.kirupa.com";
+    const POST_LIMIT = 20;
+    const BOT_USERS = new Set(["BayMax", "kirupaBot", "vaultboy", "mechaprime", "yoshiii", "bobamilk", "wafflefries", "quelly", "sora", "sarah_connor", "ellen1979", "arthurdent", "hariseldon", "kirupaBotX"]);
+    const BOT_USERS_LC = new Set([...BOT_USERS].map(u => u.toLowerCase()));
+    let currentPreview = null;
+
+    function isTrackedBot(username) {
+      if (!username) return false;
+      return BOT_USERS_LC.has(String(username).toLowerCase());
+    }
+
+    function esc(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    async function fetchJsonNoStore(url) {
+      const sep = url.includes("?") ? "&" : "?";
+      const res = await fetch(`${url}${sep}_t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+      return res.json();
+    }
+
+    async function botsInTopic(topicId) {
+      try {
+        const t = await fetchJsonNoStore(`${BASE}/t/${topicId}.json`);
+        const posts = t?.post_stream?.posts || [];
+        const bots = [];
+        for (const p of posts) {
+          const u = p?.username;
+          if (isTrackedBot(u) && !bots.includes(u)) bots.push(u);
+        }
+        return bots;
+      } catch (_) {
+        return [];
+      }
+    }
+
+    async function refreshBotsInConversationCells() {
+      const rows = [...document.querySelectorAll("#postsBody tr[data-topic-id]")];
+      const seen = new Map();
+
+      await Promise.all(rows.map(async (row) => {
+        const topicId = Number(row.getAttribute("data-topic-id"));
+        if (!topicId) return;
+
+        let bots = seen.get(topicId);
+        if (!bots) {
+          bots = await botsInTopic(topicId);
+          seen.set(topicId, bots);
+        }
+
+        const cell = row.querySelector(".cell-bots");
+        if (!cell) return;
+        cell.innerHTML = bots.length
+          ? `<span class="botlist">${esc(bots.join(", "))}</span>`
+          : '<span class="muted">None</span>';
+      }));
+    }
+
+    async function loadTracker() {
+      const postsBody = document.getElementById("postsBody");
+      const globalFlag = document.getElementById("globalFlag");
+
+      try {
+        const postsData = await fetchJsonNoStore(`${BASE}/posts.json`);
+        const latestPosts = (postsData.latest_posts || []).slice(0, POST_LIMIT);
+
+        let replyPosts = 0;
+        let threadCreations = 0;
+        let botEvents = 0;
+
+        const postRows = latestPosts.map((p) => {
+          const isThreadCreation = Number(p.post_number || 0) === 1;
+          const isBot = isTrackedBot(p.username);
+          if (isThreadCreation) threadCreations += 1; else replyPosts += 1;
+
+          let flag = "None";
+          if (isBot && isThreadCreation) {
+            flag = "Tracked bot thread creation";
+            botEvents += 1;
+          } else if (isBot && !isThreadCreation) {
+            flag = "Tracked bot response";
+            botEvents += 1;
+          }
+
+          const topicId = Number(p.topic_id || 0);
+          const topicTitle = p.topic_title || "(untitled)";
+
+          return `
+            <tr data-topic-id="${topicId}">
+              <td><a href="${BASE}${esc(p.post_url || "")}" target="_blank" rel="noopener noreferrer">${esc(topicTitle)}</a></td>
+              <td>${esc(p.username || "")}</td>
+              <td>${isThreadCreation ? '<span class="pill warn">Thread creation</span>' : '<span class="pill ok">Response</span>'}</td>
+              <td>${flag === "None" ? "None" : `<span class="pill flag">${esc(flag)}</span>`}</td>
+              <td class="cell-bots"><span class="muted">Loading...</span></td>
+              <td>
+                <label class="muted" style="display:block;margin-bottom:0.25rem;">
+                  Target
+                  <select class="target-select" style="margin-left:0.35rem;">
+                    <option value="latest" selected>Latest</option>
+                    <option value="op">OP</option>
+                  </select>
+                </label>
+                <label class="muted" style="display:block;margin-bottom:0.35rem;">
+                  Bot
+                  <select class="bot-select" style="margin-left:0.35rem;max-width:100%;">
+                    <option value="mechaprime" selected>MechaPrime - Classical Virtuoso</option>
+                    <option value="yoshiii">Yoshiii - Playful Trendspotter</option>
+                    <option value="bobamilk">BobaMilk - Minimal Student</option>
+                    <option value="wafflefries">WaffleFries - Link Scout</option>
+                    <option value="vaultboy">VaultBoy - Playful Gamer</option>
+                    <option value="quelly">Quelly - Signal Hacker</option>
+                    <option value="sora">Sora - Calm Minimalist</option>
+                    <option value="sarah_connor">Sarah Connor - Risk Hunter</option>
+                    <option value="ellen1979">Ellen1979 - Systems Survivor</option>
+                    <option value="arthurdent">ArthurDent - Dry Skeptic</option>
+                    <option value="hariseldon">HariSeldon - Strategic Futurist</option>
+                    <option value="baymax">BayMax - Warm Pragmatist</option>
+                    <option value="kirupabot">kirupaBot - Helpful Guide</option>
+                  </select>
+                </label>
+                <button class="btn reply-btn" data-topic-id="${topicId}" data-topic-title="${esc(topicTitle)}">Generate Reply Preview</button>
+              </td>
+            </tr>
+          `;
+        }).join("");
+
+        postsBody.innerHTML = postRows || '<tr><td colspan="6">No posts found.</td></tr>';
+
+        document.getElementById("postsChecked").textContent = String(latestPosts.length);
+        document.getElementById("replyPosts").textContent = String(replyPosts);
+        document.getElementById("threadCreations").textContent = String(threadCreations);
+        document.getElementById("botEvents").textContent = String(botEvents);
+        document.getElementById("updatedAt").textContent = `Updated: ${new Date().toLocaleString()}`;
+
+        if (botEvents > 0) {
+          globalFlag.style.display = "block";
+          globalFlag.textContent = `Flagged ${botEvents} recent tracked bot event(s): response(s) and/or thread creation(s).`;
+        } else {
+          globalFlag.style.display = "none";
+          globalFlag.textContent = "";
+        }
+
+        await refreshBotsInConversationCells();
+      } catch (err) {
+        postsBody.innerHTML = '<tr><td colspan="6">Could not load post data.</td></tr>';
+        document.getElementById("updatedAt").textContent = `Load failed: ${err.message}`;
+      }
+    }
+
+    function endpointForBot(botName) {
+      if (botName === "yoshiii") return "konvo_yoshiii_reply.php";
+      if (botName === "bobamilk") return "konvo_bobamilk_reply.php";
+      if (botName === "wafflefries") return "konvo_wafflefries_reply.php";
+      if (botName === "vaultboy") return "konvo_vaultboy_reply.php";
+      if (botName === "quelly") return "konvo_quelly_reply.php";
+      if (botName === "sora") return "konvo_sora_reply.php";
+      if (botName === "sarah_connor") return "konvo_sarah_connor_reply.php";
+      if (botName === "ellen1979") return "konvo_ellen1979_reply.php";
+      if (botName === "arthurdent") return "konvo_arthurdent_reply.php";
+      if (botName === "hariseldon") return "konvo_hariseldon_reply.php";
+      if (botName === "baymax") return "konvo_baymax_reply.php";
+      if (botName === "kirupabot") return "konvo_kirupabot_reply.php";
+      return "konvo_mpr_reply.php";
+    }
+
+    function clearPreview() {
+      currentPreview = null;
+      document.getElementById("previewWrap").style.display = "none";
+      document.getElementById("previewMeta").textContent = "";
+      document.getElementById("previewTarget").textContent = "";
+      document.getElementById("previewReply").value = "";
+    }
+
+    async function replyAsBot(topicId, topicTitle, botName, buttonEl) {
+      const note = document.getElementById("actionNote");
+      buttonEl.disabled = true;
+      clearPreview();
+
+      const row = buttonEl.closest("tr");
+      const targetSelect = row ? row.querySelector(".target-select") : null;
+      const replyTarget = targetSelect ? targetSelect.value : "latest";
+
+      note.textContent = `Generating preview for ${botName} in "${topicTitle}" (target: ${replyTarget})...`;
+
+      try {
+        const form = new FormData();
+        form.append("topic_id", String(topicId));
+        form.append("reply_target", replyTarget);
+        form.append("preview_only", "1");
+        const endpoint = endpointForBot(botName);
+
+        const res = await fetch(endpoint, { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Failed to generate preview.");
+
+        currentPreview = { endpoint, topicId, replyTarget, botName, topicTitle };
+        document.getElementById("previewMeta").textContent =
+          `Target used: ${data.target_used || replyTarget} (post #${data.target_post_number || "?"} by @${data.target_username || "unknown"})`;
+        document.getElementById("previewTarget").textContent = data.target_content || "(No target content found)";
+        document.getElementById("previewReply").value = data.reply_text || "";
+        document.getElementById("previewWrap").style.display = "block";
+        note.textContent = "Preview ready. Edit the draft and click Post Edited Reply.";
+      } catch (err) {
+        note.textContent = `Could not generate preview: ${err.message}`;
+      } finally {
+        buttonEl.disabled = false;
+      }
+    }
+
+    async function postEditedReply() {
+      const note = document.getElementById("actionNote");
+      if (!currentPreview) return;
+
+      const postBtn = document.getElementById("previewPostBtn");
+      const cancelBtn = document.getElementById("previewCancelBtn");
+      const replyText = document.getElementById("previewReply").value.trim();
+      if (!replyText) {
+        note.textContent = "Reply cannot be empty.";
+        return;
+      }
+
+      postBtn.disabled = true;
+      cancelBtn.disabled = true;
+      note.textContent = `Posting edited ${currentPreview.botName} reply...`;
+
+      try {
+        const form = new FormData();
+        form.append("topic_id", String(currentPreview.topicId));
+        form.append("reply_target", currentPreview.replyTarget);
+        form.append("approved_reply", replyText);
+
+        const res = await fetch(currentPreview.endpoint, { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Failed to post edited reply.");
+
+        const botNames = Array.isArray(data.bots_in_conversation) && data.bots_in_conversation.length
+          ? data.bots_in_conversation.join(", ")
+          : "none";
+        const targetInfo = data.target_post_number
+          ? `Target used: ${esc(data.target_used || currentPreview.replyTarget)} (post #${esc(String(data.target_post_number))} by @${esc(data.target_username || "")}). `
+          : "";
+
+        note.innerHTML = `Posted! <a href="${esc(data.post_url)}" target="_blank" rel="noopener noreferrer">View reply</a>. ${targetInfo}Bots now in this conversation: ${esc(botNames)}.`;
+        clearPreview();
+        await loadTracker();
+      } catch (err) {
+        note.textContent = `Could not post edited reply: ${err.message}`;
+      } finally {
+        postBtn.disabled = false;
+        cancelBtn.disabled = false;
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest(".reply-btn[data-topic-id]");
+      if (!btn) return;
+      const topicId = Number(btn.getAttribute("data-topic-id"));
+      const topicTitle = btn.getAttribute("data-topic-title") || "this topic";
+      const row = btn.closest("tr");
+      const botSelect = row ? row.querySelector(".bot-select") : null;
+      const botName = botSelect ? String(botSelect.value || "mechaprime") : "mechaprime";
+      if (!topicId) return;
+      replyAsBot(topicId, topicTitle, botName, btn);
+    });
+
+    document.getElementById("previewPostBtn").addEventListener("click", postEditedReply);
+    document.getElementById("previewCancelBtn").addEventListener("click", () => {
+      clearPreview();
+      document.getElementById("actionNote").textContent = "Preview canceled.";
+    });
+
+    loadTracker();
+  </script>
+</body>
+</html>

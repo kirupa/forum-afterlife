@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Konvo Quality Labeler</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dbe3ef;
+      --good: #166534;
+      --good-bg: #ecfdf5;
+      --bad: #991b1b;
+      --bad-bg: #fef2f2;
+      --info: #1d4ed8;
+      --info-bg: #eff6ff;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+    }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      padding: 0.9rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .row {
+      display: flex;
+      gap: 0.65rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    h1, h2 {
+      margin: 0 0 0.6rem;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.55rem 0.6rem;
+      font: inherit;
+    }
+
+    textarea.input {
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    .btn {
+      border: 1px solid #2563eb;
+      background: #eff6ff;
+      color: #1e3a8a;
+      border-radius: 8px;
+      padding: 0.45rem 0.7rem;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+
+    .btn.alt {
+      border-color: #374151;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    .btn.good {
+      border-color: #16a34a;
+      background: #ecfdf5;
+      color: #14532d;
+    }
+
+    .btn.bad {
+      border-color: #dc2626;
+      background: #fef2f2;
+      color: #7f1d1d;
+    }
+
+    .btn.active {
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2) inset;
+      font-weight: 700;
+    }
+
+    .pill {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.78rem;
+      background: #f8fafc;
+      margin-right: 0.35rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .pill.good {
+      border-color: #86efac;
+      background: var(--good-bg);
+      color: var(--good);
+    }
+
+    .pill.bad {
+      border-color: #fca5a5;
+      background: var(--bad-bg);
+      color: var(--bad);
+    }
+
+    .pill.info {
+      border-color: #93c5fd;
+      background: var(--info-bg);
+      color: var(--info);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 0.55rem;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.5rem 0.55rem;
+      background: #fbfdff;
+    }
+
+    .stat .k {
+      color: var(--muted);
+      font-size: 0.78rem;
+      display: block;
+    }
+
+    .stat .v {
+      font-size: 1.12rem;
+      font-weight: 700;
+    }
+
+    .review-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.7rem;
+      background: #fff;
+      margin-bottom: 0.7rem;
+    }
+
+    .review-item.good {
+      border-color: #86efac;
+      background: #f7fff9;
+    }
+
+    .review-item.bad {
+      border-color: #fca5a5;
+      background: #fff8f8;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .content {
+      margin: 0.55rem 0;
+      padding: 0.55rem;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fafcff;
+      white-space: pre-wrap;
+    }
+
+    .reason-tags {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      margin: 0.45rem 0;
+    }
+
+    .tag-btn {
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      color: #334155;
+      border-radius: 999px;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+
+    .tag-btn.active {
+      border-color: #93c5fd;
+      background: #e0edff;
+      color: #1e3a8a;
+    }
+
+    #itemsWrap {
+      max-height: 60vh;
+      overflow: auto;
+      padding-right: 0.15rem;
+    }
+
+    #exportOutput {
+      min-height: 220px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .hint {
+      border: 1px dashed #93c5fd;
+      background: #eff6ff;
+      color: #1e40af;
+      border-radius: 8px;
+      padding: 0.55rem;
+      font-size: 0.88rem;
+      margin-top: 0.5rem;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Konvo Quality Labeler</h1>
+    <p class="muted">Tag items as good or bad, explain why, then export a copy/paste JSON payload for model tuning.</p>
+
+    <div class="card">
+      <h2>1) Load Simulation Data</h2>
+      <div class="row" style="margin-bottom:0.45rem;">
+        <input id="jsonFile" type="file" accept=".json,application/json">
+        <button id="loadSampleBtn" class="btn alt" type="button">Load Sample File</button>
+        <button id="parseBtn" class="btn" type="button">Parse JSON</button>
+      </div>
+      <textarea id="jsonInput" class="input" placeholder='Paste checkpoint JSON (shape: {"summary":...,"posts":[...],"replies":[...]})'></textarea>
+      <div id="loadMsg" class="hint">No data loaded yet.</div>
+    </div>
+
+    <div class="card">
+      <h2>2) Review Settings</h2>
+      <div class="row" style="margin-bottom:0.45rem;">
+        <label class="muted">Reviewer
+          <input id="reviewer" class="input" style="width:220px;" placeholder="Your name">
+        </label>
+        <label class="muted">Type
+          <select id="filterType" class="input" style="width:150px;">
+            <option value="all">All</option>
+            <option value="post">Posts</option>
+            <option value="reply">Replies</option>
+          </select>
+        </label>
+        <label class="muted">Status
+          <select id="filterStatus" class="input" style="width:160px;">
+            <option value="all">All</option>
+            <option value="unlabeled">Unlabeled</option>
+            <option value="good">Good</option>
+            <option value="bad">Bad</option>
+          </select>
+        </label>
+        <label class="muted">Search
+          <input id="filterSearch" class="input" style="width:220px;" placeholder="bot/topic/id text">
+        </label>
+      </div>
+      <div class="grid">
+        <div class="stat"><span class="k">Runs</span><span id="sRuns" class="v">0</span></div>
+        <div class="stat"><span class="k">Items</span><span id="sItems" class="v">0</span></div>
+        <div class="stat"><span class="k">Good</span><span id="sGood" class="v">0</span></div>
+        <div class="stat"><span class="k">Bad</span><span id="sBad" class="v">0</span></div>
+        <div class="stat"><span class="k">Unlabeled</span><span id="sOpen" class="v">0</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3) Tag Quality</h2>
+      <div id="itemsWrap"></div>
+    </div>
+
+    <div class="card">
+      <h2>4) Export Copy/Paste Data</h2>
+      <div class="row" style="margin-bottom:0.45rem;">
+        <button id="buildExportBtn" class="btn" type="button">Build Export JSON</button>
+        <button id="copyExportBtn" class="btn alt" type="button">Copy To Clipboard</button>
+      </div>
+      <textarea id="exportOutput" class="input" placeholder="Export appears here..."></textarea>
+    </div>
+  </div>
+
+  <script>
+    const quickReasons = [
+      "too wordy",
+      "sounds robotic",
+      "great human tone",
+      "on-topic",
+      "off-topic",
+      "good brevity",
+      "bad brevity",
+      "awkward link placement",
+      "tone mismatch for bot",
+      "strong practical detail"
+    ];
+
+    let loaded = { summary: {}, posts: [], replies: [] };
+    let items = [];
+    let labels = {};
+
+    const $ = (id) => document.getElementById(id);
+
+    function esc(v) {
+      return String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function normalizeLoaded(raw) {
+      const summary = raw && typeof raw === "object" ? (raw.summary || {}) : {};
+      const posts = Array.isArray(raw.posts) ? raw.posts : [];
+      const replies = Array.isArray(raw.replies) ? raw.replies : [];
+      return { summary, posts, replies };
+    }
+
+    function makeItems() {
+      const out = [];
+      for (const p of loaded.posts) {
+        out.push({
+          key: `P${p.id}`,
+          type: "post",
+          id: p.id,
+          bot: p.bot || "",
+          title: p.title || "",
+          sourceTitle: p.source_title || "",
+          text: p.blurb || "",
+          score: { title: p.title_score ?? null, summary: p.summary_score ?? null },
+          issues: [...(p.title_issues || []), ...(p.summary_issues || [])],
+          raw: p
+        });
+      }
+      for (const r of loaded.replies) {
+        out.push({
+          key: `R${r.id}`,
+          type: "reply",
+          id: r.id,
+          bot: r.bot || "",
+          topicId: r.topic_id || "",
+          topicTitle: r.topic_title || "",
+          text: r.body || "",
+          score: { reply: r.reply_score ?? null },
+          issues: [...(r.reply_issues || []), ...(r.tone_issues || [])],
+          raw: r
+        });
+      }
+      out.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "post" ? -1 : 1;
+        return Number(a.id) - Number(b.id);
+      });
+      return out;
+    }
+
+    function getLabelState(key) {
+      if (!labels[key]) {
+        labels[key] = { decision: "", explanation: "", reasonTags: [] };
+      }
+      return labels[key];
+    }
+
+    function setDecision(key, decision) {
+      const st = getLabelState(key);
+      st.decision = st.decision === decision ? "" : decision;
+      renderItems();
+      renderStats();
+    }
+
+    function toggleReasonTag(key, tag) {
+      const st = getLabelState(key);
+      const idx = st.reasonTags.indexOf(tag);
+      if (idx >= 0) {
+        st.reasonTags.splice(idx, 1);
+      } else {
+        st.reasonTags.push(tag);
+      }
+      renderItems();
+    }
+
+    function updateExplanation(key, value) {
+      const st = getLabelState(key);
+      st.explanation = value;
+    }
+
+    function cardClass(decision) {
+      if (decision === "good") return "review-item good";
+      if (decision === "bad") return "review-item bad";
+      return "review-item";
+    }
+
+    function reasonTagHtml(itemKey, tag, active) {
+      return `<button type="button" class="tag-btn ${active ? "active" : ""}" data-key="${esc(itemKey)}" data-tag="${esc(tag)}">${esc(tag)}</button>`;
+    }
+
+    function renderItem(it) {
+      const st = getLabelState(it.key);
+      const isPost = it.type === "post";
+      const scoreText = isPost
+        ? `title:${it.score.title ?? "-"} summary:${it.score.summary ?? "-"}`
+        : `reply:${it.score.reply ?? "-"}`;
+      const meta = isPost
+        ? `Bot @${it.bot} | ${scoreText}`
+        : `Bot @${it.bot} | topic ${it.topicId} | ${scoreText}`;
+      const contentHeader = isPost
+        ? `Title: ${it.title}\nSource: ${it.sourceTitle}\n\nSummary/Body:`
+        : `Topic: ${it.topicTitle}\n\nReply Body:`;
+
+      const issuePills = (it.issues || []).map(i => `<span class="pill bad">${esc(i)}</span>`).join("");
+      const decisionPill = st.decision
+        ? `<span class="pill ${st.decision === "good" ? "good" : "bad"}">${st.decision.toUpperCase()}</span>`
+        : `<span class="pill info">UNLABELED</span>`;
+      const reasonButtons = quickReasons.map(tag => reasonTagHtml(it.key, tag, st.reasonTags.includes(tag))).join("");
+
+      return `
+        <div class="${cardClass(st.decision)}" data-type="${it.type}" data-key="${esc(it.key)}">
+          <div class="row" style="justify-content:space-between;">
+            <div>
+              <strong>${esc(it.key)} · ${esc(it.type.toUpperCase())}</strong>
+              ${decisionPill}
+            </div>
+            <div class="meta">${esc(meta)}</div>
+          </div>
+          <div style="margin-top:0.35rem;">${issuePills || '<span class="pill">no flagged issues</span>'}</div>
+          <div class="content"><strong>${esc(contentHeader)}</strong>\n${esc(it.text || "")}</div>
+          <div class="row">
+            <button type="button" class="btn good ${st.decision === "good" ? "active" : ""}" data-act="good" data-key="${esc(it.key)}">Good</button>
+            <button type="button" class="btn bad ${st.decision === "bad" ? "active" : ""}" data-act="bad" data-key="${esc(it.key)}">Bad</button>
+            <button type="button" class="btn alt ${st.decision === "" ? "active" : ""}" data-act="clear" data-key="${esc(it.key)}">Clear</button>
+          </div>
+          <div class="reason-tags">${reasonButtons}</div>
+          <textarea class="input explain" data-key="${esc(it.key)}" placeholder="Why is this good/bad?">${esc(st.explanation || "")}</textarea>
+        </div>
+      `;
+    }
+
+    function passesFilters(it) {
+      const typeFilter = $("filterType").value;
+      const statusFilter = $("filterStatus").value;
+      const q = $("filterSearch").value.trim().toLowerCase();
+      const st = getLabelState(it.key);
+
+      if (typeFilter !== "all" && it.type !== typeFilter) return false;
+      if (statusFilter === "unlabeled" && st.decision !== "") return false;
+      if (statusFilter === "good" && st.decision !== "good") return false;
+      if (statusFilter === "bad" && st.decision !== "bad") return false;
+
+      if (q !== "") {
+        const hay = [
+          it.key, it.type, it.bot, it.title, it.sourceTitle, it.topicTitle, String(it.topicId), it.text
+        ].join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    }
+
+    function renderItems() {
+      const filtered = items.filter(passesFilters);
+      $("itemsWrap").innerHTML = filtered.length
+        ? filtered.map(renderItem).join("")
+        : `<div class="muted">No items match current filters.</div>`;
+
+      document.querySelectorAll("button[data-act]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const key = btn.getAttribute("data-key");
+          const act = btn.getAttribute("data-act");
+          if (act === "good") setDecision(key, "good");
+          if (act === "bad") setDecision(key, "bad");
+          if (act === "clear") setDecision(key, "");
+        });
+      });
+
+      document.querySelectorAll("button[data-tag]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          toggleReasonTag(btn.getAttribute("data-key"), btn.getAttribute("data-tag"));
+        });
+      });
+
+      document.querySelectorAll("textarea.explain").forEach(ta => {
+        ta.addEventListener("input", () => {
+          updateExplanation(ta.getAttribute("data-key"), ta.value);
+        });
+      });
+    }
+
+    function renderStats() {
+      const total = items.length;
+      const decisions = Object.values(labels);
+      const good = decisions.filter(x => x.decision === "good").length;
+      const bad = decisions.filter(x => x.decision === "bad").length;
+      const open = total - good - bad;
+      $("sRuns").textContent = String(loaded.summary.runs_completed || loaded.summary.runs || 0);
+      $("sItems").textContent = String(total);
+      $("sGood").textContent = String(good);
+      $("sBad").textContent = String(bad);
+      $("sOpen").textContent = String(open);
+    }
+
+    function buildExport() {
+      const reviewer = $("reviewer").value.trim();
+      const labeled = items
+        .map(it => ({ it, st: getLabelState(it.key) }))
+        .filter(x => x.st.decision === "good" || x.st.decision === "bad")
+        .map(({ it, st }) => ({
+          key: it.key,
+          type: it.type,
+          id: it.id,
+          decision: st.decision,
+          explanation: st.explanation || "",
+          reason_tags: st.reasonTags || [],
+          bot: it.bot || "",
+          topic_id: it.topicId || null,
+          topic_title: it.topicTitle || "",
+          title: it.title || "",
+          source_title: it.sourceTitle || "",
+          text: it.text || "",
+          score: it.score || {},
+          issues: it.issues || []
+        }));
+
+      const payload = {
+        exported_at: new Date().toISOString(),
+        reviewer: reviewer || null,
+        source_summary: loaded.summary || {},
+        item_count: items.length,
+        labeled_count: labeled.length,
+        labels: labeled
+      };
+      $("exportOutput").value = JSON.stringify(payload, null, 2);
+    }
+
+    async function copyExport() {
+      const txt = $("exportOutput").value;
+      if (!txt) return;
+      try {
+        await navigator.clipboard.writeText(txt);
+        $("loadMsg").textContent = "Export copied to clipboard.";
+      } catch (_) {
+        $("loadMsg").textContent = "Could not auto-copy. Manually copy from export box.";
+      }
+    }
+
+    function applyLoadedData(obj) {
+      loaded = normalizeLoaded(obj);
+      items = makeItems();
+      labels = {};
+      for (const it of items) getLabelState(it.key);
+      renderItems();
+      renderStats();
+      $("loadMsg").textContent = `Loaded ${items.length} items (${loaded.posts.length} posts, ${loaded.replies.length} replies).`;
+    }
+
+    function parseFromTextarea() {
+      const raw = $("jsonInput").value.trim();
+      if (!raw) {
+        $("loadMsg").textContent = "Paste JSON first.";
+        return;
+      }
+      try {
+        applyLoadedData(JSON.parse(raw));
+      } catch (err) {
+        $("loadMsg").textContent = `JSON parse error: ${err.message}`;
+      }
+    }
+
+    function parseFromFile(file) {
+      const fr = new FileReader();
+      fr.onload = () => {
+        $("jsonInput").value = String(fr.result || "");
+        parseFromTextarea();
+      };
+      fr.readAsText(file);
+    }
+
+    async function loadSample() {
+      try {
+        const res = await fetch("./_notes/konvo_simulation_checkpoint.sample.json", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const txt = await res.text();
+        $("jsonInput").value = txt;
+        parseFromTextarea();
+      } catch (err) {
+        $("loadMsg").textContent = `Could not load sample file: ${err.message}`;
+      }
+    }
+
+    $("jsonFile").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) parseFromFile(f);
+    });
+    $("parseBtn").addEventListener("click", parseFromTextarea);
+    $("loadSampleBtn").addEventListener("click", loadSample);
+    $("buildExportBtn").addEventListener("click", buildExport);
+    $("copyExportBtn").addEventListener("click", copyExport);
+    $("filterType").addEventListener("change", renderItems);
+    $("filterStatus").addEventListener("change", renderItems);
+    $("filterSearch").addEventListener("input", renderItems);
+  </script>
+</body>
+</html>
