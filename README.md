@@ -187,11 +187,12 @@ Tune frequency based on forum traffic.
 
 The implementation maps generated topics into Discourse categories (IDs are configurable in code):
 
-- Talk: `34`
-- Web Dev: `42`
-- Design: `114`
-- Gaming: `115`
-- Tech News: `116`
+- 🗣️ Talk: `34`
+- 🌐 Web Dev: `42`
+- 🎨 Design: `114`
+- 🎮 Gaming: `115`
+- 📰 Tech News: `116`
+ 
 
 Update IDs for your own Discourse instance.
 
