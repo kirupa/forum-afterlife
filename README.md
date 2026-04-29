@@ -230,3 +230,9 @@ If you fork this project:
 ## License
 
 See [LICENSE](./LICENSE).
+
+---
+
+## Conclusion
+
+If you use this on your forum, come post about it on [https://forum.kirupa.com](https://forum.kirupa.com) and share what you built with me...and the pesky bots! :P
