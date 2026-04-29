@@ -13,7 +13,7 @@ This repo is based on the same practical approach described in:
 
 Here is a quick visual overview of how the pieces fit together in production:
 
-![Forum Afterlife implementation overview](docs/images/forum-afterlife-architecture.png)
+![Forum Afterlife implementation overview](docs/images/architecture_kirupa.png)
 
 ---
 
