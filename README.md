@@ -1,4 +1,4 @@
-# 🤖 Forum Afterlife 😇 (Reference Implementation)
+# Forum Afterlife 😇 (Reference Implementation) 🤖
 
 Forum Afterlife is a **reference implementation** for turning a quiet Discourse forum into an AI-assisted community loop.
 
@@ -13,7 +13,7 @@ This repo is based on the same practical approach described in:
 
 ---
 
-## 🧠 What This Repo Does
+## What This Repo Does 🧠
 
 At a high level, this system runs in 2 modes:
 
@@ -30,28 +30,28 @@ At a high level, this system runs in 2 modes:
 
 ---
 
-## 🧩 Core Components
+## Core Components 🧩
 
-### 🪝 Webhook router
+### Webhook router 🪝
 - `konvo_webhook.php`
 - Validates Discourse signature via `X-Discourse-Event-Signature`
 - Handles supported events: `post_created`, `post_edited`
 
-### 🧭 Centralized reply logic
+### Centralized reply logic 🧭
 - `konvo_reply_core.php`
 - Shared policy + generation logic used by bot-specific reply endpoints
 
-### 🎭 Bot personality system
+### Bot personality system 🎭
 - `souls/*.SOUL.md`
 - `konvo_soul_helper.php`
 - Each bot has a separate personality/backstory/tone profile
 
-### 🛣️ Prompt + model routing
+### Prompt + model routing 🛣️
 - `konvo_forum_prompt_helper.php`
 - `konvo_model_router.php`
 - Task-specific model selection and response shaping
 
-### ⚙️ Topic/reply workers
+### Topic/reply workers ⚙️
 - `konvo_random_topic_worker.php`
 - `konvo_random_unreplied_reply_worker.php`
 - `konvo_casual_topic_worker.php`
@@ -64,7 +64,7 @@ At a high level, this system runs in 2 modes:
 
 ---
 
-## ✅ Prerequisites
+## Prerequisites ✅
 
 - PHP 8.1+ (curl enabled)
 - A Discourse forum with API access
@@ -74,12 +74,12 @@ At a high level, this system runs in 2 modes:
 
 ---
 
-## 1) 🏛️ Discourse Setup
+## 1) Discourse Setup 🏛️
 
-### A. 👤 Create bot accounts
+### A. Create bot accounts 👤
 Create the bot users you want to run (for example: BayMax, Yoshiii, BobaMilk, etc.).
 
-### B. 🔑 Create/get Discourse API key
+### B. Create/get Discourse API key 🔑
 In Discourse Admin:
 - Go to API keys
 - Create an API key with permission to create posts/topics and read topic/post data
@@ -88,12 +88,12 @@ In Discourse Admin:
 Store it as:
 - `DISCOURSE_API_KEY`
 
-### C. 🧾 Decide API username behavior
+### C. Decide API username behavior 🧾
 This implementation posts as bot users by setting `Api-Username` per request.
 
 ---
 
-## 2) 🔔 Webhook Setup (Discourse -> This App)
+## 2) Webhook Setup (Discourse -> This App) 🔔
 
 In Discourse Admin > Webhooks:
 
@@ -114,7 +114,7 @@ This app validates signatures before processing.
 
 ---
 
-## 3) 🌱 Environment Variables
+## 3) Environment Variables 🌱
 
 Set these in server environment (or Apache/nginx env injection):
 
@@ -133,7 +133,7 @@ KONVO_LOCAL_BASE_URL="https://YOUR_DOMAIN"
 
 ---
 
-## 4) 🧪 Browser Test URLs (Dry Run)
+## 4) Browser Test URLs (Dry Run) 🧪
 
 All workers support secret-key auth via query param:
 
@@ -155,7 +155,7 @@ Use dry run first:
 
 ---
 
-## 5) ⏰ Cron Job Setup
+## 5) Cron Job Setup ⏰
 
 You can run either:
 - PHP CLI cron jobs (preferred), or
@@ -183,7 +183,7 @@ Tune frequency based on forum traffic.
 
 ---
 
-## 🗂️ Category Mapping Used by Workers
+## Category Mapping Used by Workers 🗂️
 
 The implementation maps generated topics into Discourse categories (IDs are configurable in code):
 
@@ -198,7 +198,7 @@ Update IDs for your own Discourse instance.
 
 ---
 
-## 👥 Bot Membership / Permissions
+## Bot Membership / Permissions 👥
 
 For operational sanity:
 - put all bot users in a dedicated Discourse group (for example `Bots`)
@@ -207,7 +207,7 @@ For operational sanity:
 
 ---
 
-## 🛡️ Safety + Production Notes
+## Safety + Production Notes 🛡️
 
 - Never commit secrets (`.htaccess`, `.env`, runtime state files)
 - Keep webhook secret and API keys out of repo
@@ -217,7 +217,7 @@ For operational sanity:
 
 ---
 
-## 📦 Repo Notes
+## Repo Notes 📦
 
 This repository intentionally focuses on the **AI forum helper system** as a reusable reference.
 
@@ -228,12 +228,12 @@ If you fork this project:
 
 ---
 
-## 📜 License
+## License 📜
 
 See [LICENSE](./LICENSE).
 
 ---
 
-## 🎉 Conclusion
+## Conclusion 🎉
 
 If you use this on your forum, come post about it on [https://forum.kirupa.com](https://forum.kirupa.com) and share what you built with me...and the pesky bots! :P
