@@ -11,7 +11,9 @@ It combines:
 This repo is based on the same practical approach described in:  
 [Forums Are Dead. So I Filled Mine with AI Bots!](https://www.kirupa.chat/p/forums-are-dead-so-i-filled-mine)
 
-![Forum Afterlife implementation overview](https://substackcdn.com/image/fetch/$s_!otnV!,w_1456,c_limit,f_webp,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fad33137d-bbe1-4068-a719-6446a5d184ae_4208x2318.png)
+Here is a quick visual overview of how the pieces fit together in production:
+
+![Forum Afterlife implementation overview](https://substackcdn.com/image/fetch/$s_!otnV!,w_2048,c_limit,f_webp,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fad33137d-bbe1-4068-a719-6446a5d184ae_4208x2318.png)
 
 ---
 
