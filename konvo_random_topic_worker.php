@@ -80,6 +80,7 @@ if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42)
 if (!defined('KONVO_GAMING_CATEGORY_ID')) define('KONVO_GAMING_CATEGORY_ID', 115);
 if (!defined('KONVO_DESIGN_CATEGORY_ID')) define('KONVO_DESIGN_CATEGORY_ID', 114);
 if (!defined('KONVO_TECH_NEWS_CATEGORY_ID')) define('KONVO_TECH_NEWS_CATEGORY_ID', 116);
+if (!defined('KONVO_TITLE_MAX_CHARS')) define('KONVO_TITLE_MAX_CHARS', 64);
 
 function konvo_random_topic_fast_mode()
 {
@@ -226,8 +227,8 @@ function normalize_title($title)
     $title = preg_replace('/^hn\s*[:\-]\s*/i', '', $title);
     $title = trim((string)$title);
     if ($title === '') $title = 'Interesting topic';
-    if (strlen($title) > 90) {
-        $short = trim((string)substr($title, 0, 90));
+    if (strlen($title) > KONVO_TITLE_MAX_CHARS) {
+        $short = trim((string)substr($title, 0, KONVO_TITLE_MAX_CHARS));
         $lastSpace = strrpos($short, ' ');
         if ($lastSpace !== false && $lastSpace > 24) {
             $short = trim((string)substr($short, 0, (int)$lastSpace));
@@ -1642,6 +1643,34 @@ function konvo_title_looks_incomplete_phrase($title)
     return false;
 }
 
+function konvo_validate_forum_title_candidate($title, &$error = '')
+{
+    $error = '';
+    $title = trim((string)$title);
+    if ($title === '') {
+        $error = 'Generated title was empty';
+        return false;
+    }
+    if (!konvo_text_is_english_like($title)) {
+        $error = 'Generated title was not English';
+        return false;
+    }
+    if (strlen($title) > KONVO_TITLE_MAX_CHARS) {
+        $error = 'Generated title exceeded length limit';
+        return false;
+    }
+    if (konvo_title_looks_incomplete_phrase($title)) {
+        $error = 'Generated title looked incomplete';
+        return false;
+    }
+    $wordCount = preg_match_all('/\b[\p{L}\p{N}]+\b/u', $title, $wm);
+    if (!is_int($wordCount) || $wordCount < 4) {
+        $error = 'Generated title too short';
+        return false;
+    }
+    return true;
+}
+
 function konvo_generate_title_with_llm($item, $strict)
 {
     if (!function_exists('curl_init')) {
@@ -1662,9 +1691,10 @@ function konvo_generate_title_with_llm($item, $strict)
 
     $freshnessRule = 'Treat source/soul context as guidance only. Produce fresh wording each run and avoid reusable title templates.';
     $system = 'You are writing one forum post title for a shared web article. Return ONLY JSON: {"title":"..."}. '
-        . 'Requirements: headline-worthy, human language, concise, complete thought, sentence case, 5-11 words, <= 68 characters, no emoji, no quotes, no colon, no clickbait fluff. '
+        . 'Requirements: headline-worthy, human language, concise, complete thought, sentence case, 5-11 words, <= ' . KONVO_TITLE_MAX_CHARS . ' characters, no emoji, no quotes, no colon, no clickbait fluff. '
         . 'English only. '
         . 'Do not end with trailing prepositions/articles or unfinished phrasing. '
+        . 'Count characters before finalizing and keep within the limit. '
         . 'Never create titles about politics, violence, or sexual/explicit topics. '
         . 'Do not copy or lightly paraphrase the source title. '
         . 'Use a useful angle for practitioners. '
@@ -1731,11 +1761,9 @@ function konvo_generate_title_with_llm($item, $strict)
     }
 
     $title = konvo_clean_generated_title($title);
-    if ($title === '') {
-        return array('ok' => false, 'error' => 'Generated title was empty');
-    }
-    if (!konvo_text_is_english_like($title)) {
-        return array('ok' => false, 'error' => 'Generated title was not English');
+    $validationError = '';
+    if (!konvo_validate_forum_title_candidate($title, $validationError)) {
+        return array('ok' => false, 'error' => $validationError);
     }
 
     $sourceKey = konvo_title_key($sourceTitle);
@@ -1743,18 +1771,6 @@ function konvo_generate_title_with_llm($item, $strict)
     if ($sourceKey !== '' && $titleKey !== '' && $titleKey === $sourceKey) {
         return array('ok' => false, 'error' => 'Generated title matched source title');
     }
-    if (strlen($title) > 68) {
-        return array('ok' => false, 'error' => 'Generated title exceeded length limit');
-    }
-    if (konvo_title_looks_incomplete_phrase($title)) {
-        return array('ok' => false, 'error' => 'Generated title looked incomplete');
-    }
-
-    $wordCount = preg_match_all('/\b[\p{L}\p{N}]+\b/u', $title, $wm);
-    if (!is_int($wordCount) || $wordCount < 4) {
-        return array('ok' => false, 'error' => 'Generated title too short');
-    }
-
     return array('ok' => true, 'title' => $title, 'status' => $status);
 }
 
@@ -1764,12 +1780,21 @@ function build_short_forum_title($item)
         $base = normalize_title((string)($item['title'] ?? 'Interesting topic'));
         $base = konvo_clean_generated_title($base);
         if ($base === '') $base = 'Interesting topic';
-        if (strlen($base) > 68) {
-            $base = trim((string)substr($base, 0, 68));
+        if (strlen($base) > KONVO_TITLE_MAX_CHARS) {
+            $base = trim((string)substr($base, 0, KONVO_TITLE_MAX_CHARS));
             $base = preg_replace('/\s+\S*$/', '', (string)$base) ?? $base;
             $base = trim((string)$base);
         }
-        return array('ok' => true, 'title' => $base);
+        $quickError = '';
+        if (konvo_validate_forum_title_candidate($base, $quickError)) {
+            return array('ok' => true, 'title' => $base);
+        }
+        // Fast-mode fallback can still request one LLM rewrite when feed titles are truncated.
+        $strictRewrite = konvo_generate_title_with_llm($item, true);
+        if (is_array($strictRewrite) && !empty($strictRewrite['ok']) && isset($strictRewrite['title'])) {
+            return array('ok' => true, 'title' => (string)$strictRewrite['title']);
+        }
+        return array('ok' => true, 'title' => 'New data sharing plan could reshape product strategy');
     }
 
     $first = konvo_generate_title_with_llm($item, false);
