@@ -7476,6 +7476,7 @@ function konvo_run_reply(array $cfg): void
     $targetRawFallback = trim((string)($_POST['target_raw'] ?? ''));
     $targetUsernameFallback = trim((string)($_POST['target_username'] ?? ''));
     $directReplyToBotHint = ((string)($_POST['direct_reply_to_bot'] ?? '') === '1');
+    $safeMode = ((string)($_POST['safe_mode'] ?? '') === '1');
     $responseMode = strtolower(trim((string)($_POST['response_mode'] ?? '')));
     if (!in_array($responseMode, ['thanks_ack'], true)) {
         $responseMode = '';
@@ -7568,6 +7569,63 @@ function konvo_run_reply(array $cfg): void
     $topicOpRaw = konvo_post_content_text($opPost);
     $topicOpLower = strtolower($topicOpUsername);
     $botLower = strtolower(trim($botUsername));
+
+    if ($safeMode && !$manualEditMode) {
+        $safeReplyText = konvo_emergency_safe_reply_text($title, $lastRaw, $topicOpRaw);
+        if ($previewOnly) {
+            konvo_json_out([
+                'ok' => true,
+                'preview' => true,
+                'reply_text' => $safeReplyText,
+                'target_used' => $replyTarget,
+                'target_post_number' => $lastPostNumber,
+                'target_username' => $lastUsername,
+                'target_content' => $lastRaw,
+                'reply_to_post_number' => $lastPostNumber,
+                'response_mode' => $responseMode,
+                'safe_mode' => true,
+            ]);
+        }
+
+        $postPayload = [
+            'raw' => $safeReplyText,
+            'topic_id' => $topicId,
+        ];
+        if ($lastPostNumber > 0) {
+            $postPayload['reply_to_post_number'] = $lastPostNumber;
+        }
+        $postRes = konvo_call_api($baseUrl . '/posts.json', $commonHeaders, $postPayload);
+        if (!$postRes['ok'] || !is_array($postRes['body'])) {
+            $err = 'Discourse rejected the safe-mode reply.';
+            if (is_array($postRes['body']) && isset($postRes['body']['errors']) && is_array($postRes['body']['errors'])) {
+                $err = implode(' ', array_map('strval', $postRes['body']['errors']));
+            }
+            konvo_json_out([
+                'ok' => false,
+                'error' => $err,
+                'status' => (int)($postRes['status'] ?? 0),
+                'raw' => (string)($postRes['raw'] ?? ''),
+            ], 502);
+        }
+        $newPost = $postRes['body'];
+        $newPostId = (int)($newPost['id'] ?? 0);
+        $newPostNumber = (int)($newPost['post_number'] ?? 0);
+        $postUrl = $baseUrl . '/t/' . $topicId . '/' . $newPostNumber;
+        konvo_json_out([
+            'ok' => true,
+            'posted' => true,
+            'safe_mode' => true,
+            'post_id' => $newPostId,
+            'post_number' => $newPostNumber,
+            'post_url' => $postUrl,
+            'reply_text' => $safeReplyText,
+            'target_used' => $replyTarget,
+            'target_post_number' => $lastPostNumber,
+            'target_username' => $lastUsername,
+            'reply_to_post_number' => $lastPostNumber,
+            'bots_in_conversation' => [],
+        ]);
+    }
     if ($isKirupaBot && $hasPriorPostByBot && !$manualEditMode && !$previewOnly) {
         konvo_json_out([
             'ok' => true,

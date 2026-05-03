@@ -472,6 +472,7 @@ if ($isTrackedBotAuthor && $author !== 'kirupabot') {
             'reply_target' => 'latest',
             'force_reply_to_bot' => '1',
             'force_kirupa_link' => '1',
+            'safe_mode' => '1',
         ]);
         jsonOut([
             'ok' => true,
@@ -560,6 +561,7 @@ foreach ($toTrigger as $bot => $script) {
         'target_post_number' => (string)$postNumber,
         'target_username' => (string)($post['username'] ?? ''),
         'target_raw' => (string)$raw,
+        'safe_mode' => '1',
     ];
     if ($replyBot !== '' && $bot === $replyBot) {
         $fields['direct_reply_to_bot'] = '1';
