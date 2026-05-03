@@ -532,7 +532,13 @@ foreach ($toTrigger as $bot => $script) {
     $fields = [
         'topic_id' => (string)$topicId,
         'reply_target' => 'latest',
+        'target_post_number' => (string)$postNumber,
+        'target_username' => (string)($post['username'] ?? ''),
+        'target_raw' => (string)$raw,
     ];
+    if ($replyBot !== '' && $bot === $replyBot) {
+        $fields['direct_reply_to_bot'] = '1';
+    }
     if (isset($triggerMeta[$bot]['response_mode']) && is_string($triggerMeta[$bot]['response_mode'])) {
         $fields['response_mode'] = (string)$triggerMeta[$bot]['response_mode'];
     }

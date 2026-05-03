@@ -2756,6 +2756,16 @@ function konvo_is_direct_response_to_bot(?array $targetPost, string $botUsername
     return false;
 }
 
+function konvo_target_is_copy_callout(string $text): bool
+{
+    $txt = strtolower(trim($text));
+    if ($txt === '') {
+        return false;
+    }
+
+    return preg_match('/\b(copy|copied|copying|verbatim|parrot|parroting|repeat(?:ed|ing)?|same answer|word for word|paste(?:d)?|lifted)\b/i', $txt) === 1;
+}
+
 function konvo_format_programming_constructs_markdown(string $text): string
 {
     // Never alter fenced code blocks. Only format prose outside code fences.
@@ -4679,7 +4689,22 @@ function konvo_get_target_post_context(array $posts, string $replyTarget): array
         }
     }
 
-    // Latest mode: most recent non-empty reply, including bot replies.
+    // Latest mode: prefer the most recent non-bot reply so "latest" tracks the
+    // current human conversation turn when possible.
+    for ($i = count($posts) - 1; $i >= 0; $i--) {
+        $post = $posts[$i] ?? null;
+        if (!is_array($post)) {
+            continue;
+        }
+        $postNumber = (int)($post['post_number'] ?? 0);
+        $raw = konvo_post_content_text($post);
+        $username = (string)($post['username'] ?? '');
+        if ($postNumber > 1 && $raw !== '' && !konvo_is_known_bot_username($username)) {
+            return ['raw' => $raw, 'username' => $username, 'post_number' => $postNumber];
+        }
+    }
+
+    // Fallback: most recent non-empty reply, including bot replies.
     for ($i = count($posts) - 1; $i >= 0; $i--) {
         $post = $posts[$i] ?? null;
         if (!is_array($post)) {
@@ -5738,6 +5763,89 @@ function konvo_find_similar_same_bot_reply(string $reply, array $recentBotPosts,
         return null;
     }
     $best['score'] = $bestScore;
+    return $best;
+}
+
+function konvo_normalize_text_for_parrot_check(string $text): string
+{
+    $txt = html_entity_decode(strip_tags((string)$text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $txt = strtolower(trim($txt));
+    if ($txt === '') {
+        return '';
+    }
+    $txt = preg_replace('/```[\s\S]*?```/', ' ', $txt) ?? $txt;
+    $txt = preg_replace('/[^a-z0-9\s]+/i', ' ', $txt) ?? $txt;
+    $txt = preg_replace('/\s+/', ' ', $txt) ?? $txt;
+    return trim($txt);
+}
+
+function konvo_find_parrot_candidate(string $replyText, array $posts, string $currentBotUsername): ?array
+{
+    $replyText = trim((string)$replyText);
+    if ($replyText === '' || $posts === []) {
+        return null;
+    }
+
+    $replyNorm = konvo_normalize_text_for_parrot_check($replyText);
+    if ($replyNorm === '') {
+        return null;
+    }
+
+    $currentBot = strtolower(trim($currentBotUsername));
+    $best = null;
+    $bestScore = 0.0;
+
+    foreach ($posts as $post) {
+        if (!is_array($post)) {
+            continue;
+        }
+
+        $username = trim((string)($post['username'] ?? ''));
+        if ($username !== '' && strtolower($username) === $currentBot) {
+            continue;
+        }
+
+        $raw = trim((string)konvo_post_content_text($post));
+        if ($raw === '') {
+            continue;
+        }
+
+        $rawNorm = konvo_normalize_text_for_parrot_check($raw);
+        if ($rawNorm === '') {
+            continue;
+        }
+
+        $sim = konvo_similarity_score($replyText, $raw);
+        $phraseStats = konvo_phrase_overlap_stats($replyText, $raw);
+        $phraseRatio = (float)($phraseStats['ratio'] ?? 0.0);
+        $sharedCount = (int)($phraseStats['shared_count'] ?? 0);
+        $normalizedExact = ($replyNorm === $rawNorm);
+        $looksParroted = $normalizedExact
+            || $sim >= 0.82
+            || ($phraseRatio >= 0.72 && $sharedCount >= 2)
+            || ($phraseRatio >= 0.58 && $sharedCount >= 3);
+
+        if (!$looksParroted) {
+            continue;
+        }
+
+        $score = $normalizedExact ? 1.0 : max($sim, $phraseRatio);
+        if ($score <= $bestScore) {
+            continue;
+        }
+
+        $bestScore = $score;
+        $best = [
+            'post_number' => (int)($post['post_number'] ?? 0),
+            'username' => $username,
+            'raw' => $raw,
+            'score' => $score,
+            'normalized_exact' => $normalizedExact,
+            'phrase_ratio' => $phraseRatio,
+            'shared_count' => $sharedCount,
+        ];
+    }
+
     return $best;
 }
 
@@ -7319,6 +7427,9 @@ function konvo_run_reply(array $cfg): void
     $editPostId = (int)($_POST['edit_post_id'] ?? 0);
     $replyTarget = (string)($_POST['reply_target'] ?? 'latest');
     $targetPostNumber = (int)($_POST['target_post_number'] ?? 0);
+    $targetRawFallback = trim((string)($_POST['target_raw'] ?? ''));
+    $targetUsernameFallback = trim((string)($_POST['target_username'] ?? ''));
+    $directReplyToBotHint = ((string)($_POST['direct_reply_to_bot'] ?? '') === '1');
     $responseMode = strtolower(trim((string)($_POST['response_mode'] ?? '')));
     if (!in_array($responseMode, ['thanks_ack'], true)) {
         $responseMode = '';
@@ -7378,13 +7489,19 @@ function konvo_run_reply(array $cfg): void
                 'username' => (string)($explicitTargetPost['username'] ?? ''),
                 'post_number' => (int)($explicitTargetPost['post_number'] ?? $targetPostNumber),
             ];
+        } elseif ($targetRawFallback !== '') {
+            $target = [
+                'raw' => $targetRawFallback,
+                'username' => $targetUsernameFallback,
+                'post_number' => $targetPostNumber,
+            ];
         }
     }
     $lastRaw = (string)$target['raw'];
     $lastUsername = (string)$target['username'];
     $lastPostNumber = (int)$target['post_number'];
     $targetPost = konvo_find_post_by_number($posts, $lastPostNumber);
-    $isDirectResponseToBot = konvo_is_direct_response_to_bot($targetPost, $botUsername);
+    $isDirectResponseToBot = konvo_is_direct_response_to_bot($targetPost, $botUsername) || $directReplyToBotHint;
     $targetAuthorIsBot = konvo_is_known_bot_username($lastUsername);
     $replyToBotRequiresMention = !empty($cfg['reply_to_bot_requires_explicit_mention']);
     $targetExplicitlyMentionsCurrentBot = konvo_post_explicitly_mentions_bot($lastRaw, $botUsername, $signatureBase);
@@ -7657,6 +7774,10 @@ function konvo_run_reply(array $cfg): void
     $isMemeGifThread = konvo_is_meme_gif_context($title . "\n" . $lastRaw . "\n" . $prevRaw . "\n" . $allTopicText);
     $isQuestionLike = konvo_is_question_like($lastRaw);
     $requiresFollowThrough = konvo_target_requests_concrete_output($lastRaw);
+    $directQuestionToBot = !$targetAuthorIsBot
+        && $isQuestionLike
+        && ($isDirectResponseToBot || $targetExplicitlyMentionsCurrentBot);
+    $copyCalloutQuestion = $directQuestionToBot && konvo_target_is_copy_callout($lastRaw);
     $isTechnicalQuestion = $isTechnicalTopic && $isQuestionLike;
     $wantsArchDiagram = $isTechnicalTopic && konvo_wants_architecture_diagram($title . "\n" . $lastRaw);
     $threadIsTechnical = $isTechnicalTopic || konvo_topic_is_technical($topic);
@@ -7693,6 +7814,12 @@ function konvo_run_reply(array $cfg): void
         $engagementRule = 'Meme/GIF reaction mode: keep this as a short playful reaction. Enjoy it with a witty line or quick "lol"-style response. Do not critique or suggest improvements.';
     } elseif ($learnerFollowupMode) {
         $engagementRule = 'OP follow-up mode is ON. You asked this thread\'s question and are now replying to someone else\'s answer. Reply naturally to the point they made and keep it short. Do not force a thank-you tone unless it is genuinely appropriate.';
+    } elseif ($directQuestionToBot) {
+        $engagementRule = 'Direct question to you mode is ON. Answer the question being asked in the target post directly in the first sentence. '
+            . 'Do not pivot back to the OP or summarize the thread. '
+            . ($copyCalloutQuestion
+                ? 'The target is calling out copying or repetition. Acknowledge that plainly, own the miss, and respond to that concern instead of repeating the earlier answer.'
+                : 'If the question is about your own earlier reply, address that reply plainly instead of restating the thread answer.');
     } elseif ($isSimpleClarificationNoExample) {
         $engagementRule = 'Simple clarification mode is ON. The target is a short definitional question. Answer directly in 1-2 short sentences (max 35 words), no code blocks, no bullets, no headings, no links, and no extra elaboration unless asked.';
     } elseif ($isTechnicalQuestion && $wantsExampleRepro) {
@@ -7721,6 +7848,8 @@ function konvo_run_reply(array $cfg): void
         : 'Conversation-first rule: reply directly to the target post, not the full article.';
     if ($learnerFollowupMode) {
         $conversationFirstRule = 'Conversation-first rule: as the original poster following up, acknowledge one concrete detail from the target reply and add one brief, topical continuation.';
+    } elseif ($directQuestionToBot) {
+        $conversationFirstRule = 'Conversation-first rule: this is a direct question to you. Reply to that exact question and stay anchored to the target post, not the topic opener.';
     }
     if ($kirupaBotCuratorMode) {
         $forumVoiceRule = 'kirupaBot helper voice: short and friendly. Summarize earlier answers in plain language without adding your own diagnosis. Keep it concise.';
@@ -7737,6 +7866,9 @@ function konvo_run_reply(array $cfg): void
     $generalQualityRule = 'General reply quality rules: check every existing response in the thread before drafting. Add one concrete new detail (mechanism, caveat, correction, metric, small example, or useful source) that is not already in thread replies. Do not summarize existing replies. Different words, same idea is an echo. If you cannot add a new detail, output [[NO_REPLY]]. '
         . $followThroughRule
         . ' If you list 3 or more items, format them as markdown bullet points (one item per line).';
+    if ($directQuestionToBot) {
+        $generalQualityRule .= ' For direct questions to you, a short direct acknowledgement counts as value when it resolves the question. Never copy another poster\'s wording.';
+    }
     if ($kirupaBotCuratorMode) {
         $generalQualityRule = 'kirupaBot resource rule: do not add your own technical answer. Briefly acknowledge what others already answered, summarize the main points in one short sentence, then point to kirupa.com resources for deeper details. Keep it concise.';
     }
@@ -8490,6 +8622,61 @@ function konvo_run_reply(array $cfg): void
                 if ($saturationText !== '') {
                     $replyText = $saturationText;
                 }
+            }
+        }
+
+        $parrotCandidate = konvo_find_parrot_candidate($replyText, $posts, $botUsername);
+        if (is_array($parrotCandidate) && trim((string)($parrotCandidate['raw'] ?? '')) !== '') {
+            $parrotPayload = [
+                'model' => $modelName,
+                'messages' => [
+                    [
+                        'role' => 'system',
+                        'content' => $soulPrompt
+                            . ' Rewrite this reply so it does not copy or closely paraphrase an earlier post in the thread. '
+                            . 'Use different wording and answer the target post directly. '
+                            . ($directQuestionToBot
+                                ? 'This is a direct question to you, so resolve that question plainly in sentence one. '
+                                : '')
+                            . ($copyCalloutQuestion
+                                ? 'The target is explicitly calling out copying or repetition. Acknowledge that plainly and address the concern instead of restating the copied answer. '
+                                : '')
+                            . $conversationFirstRule . ' '
+                            . $generalQualityRule . ' '
+                            . $antiAgreementRule . ' '
+                            . $securityRule
+                            . ' Do not sign your post; the forum already shows your username.',
+                    ],
+                    [
+                        'role' => 'user',
+                        'content' => "Target post:\n{$lastRaw}\n\nEarlier thread post to avoid echoing (post #"
+                            . (int)($parrotCandidate['post_number'] ?? 0)
+                            . ' by @' . (string)($parrotCandidate['username'] ?? '')
+                            . "):\n"
+                            . (string)($parrotCandidate['raw'] ?? '')
+                            . "\n\nCurrent draft:\n{$replyText}\n\nRewrite so it is clearly distinct and directly responsive to the target post.",
+                    ],
+                ],
+                'temperature' => (float)$cfg['strict_temperature'],
+            ];
+            $parrotRes = konvo_call_api(
+                'https://api.openai.com/v1/chat/completions',
+                [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $openAiApiKey,
+                ],
+                $parrotPayload
+            );
+            if ($parrotRes['ok'] && is_array($parrotRes['body']) && isset($parrotRes['body']['choices'][0]['message']['content'])) {
+                $parrotText = trim((string)$parrotRes['body']['choices'][0]['message']['content']);
+                if ($parrotText !== '') {
+                    $replyText = $parrotText;
+                }
+            }
+
+            $parrotCandidateFinal = konvo_find_parrot_candidate($replyText, $posts, $botUsername);
+            if ($copyCalloutQuestion && is_array($parrotCandidateFinal)) {
+                $replyText = "Yeah, that repeated your wording too closely.\n\nThat was a miss. I should have answered your question directly instead of echoing the earlier reply.";
             }
         }
 
@@ -9253,7 +9440,7 @@ function konvo_run_reply(array $cfg): void
         $replyText = konvo_normalize_signature($replyText, $signature);
         $replyText = konvo_enforce_banned_phrase_cleanup($replyText);
     }
-    $duplicateGate = ($learnerFollowupMode || $thanksAckMode || $manualEditMode)
+    $duplicateGate = ($thanksAckMode || $manualEditMode)
         ? ['skip' => false, 'reason' => '']
         : konvo_detect_duplicate_reply($replyText, $lastRaw, $recentOtherBotPosts, $recentSameBotPosts);
 
@@ -9428,6 +9615,12 @@ function konvo_run_reply(array $cfg): void
                 ];
             }
         }
+    }
+    if ($directQuestionToBot && !empty($lowValueGate['skip'])) {
+        $eval = is_array($lowValueGate['eval'] ?? null) ? $lowValueGate['eval'] : [];
+        $eval['direct_question_to_bot_override'] = true;
+        $eval['direct_question_copy_callout'] = $copyCalloutQuestion;
+        $lowValueGate = ['skip' => false, 'reason' => '', 'eval' => $eval];
     }
 
     if ($previewOnly) {
