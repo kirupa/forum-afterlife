@@ -161,6 +161,7 @@ function konvo_emergency_safe_reply_with_llm(
                     . ' You are writing a short direct forum reply in recovery mode.'
                     . ' Keep it to 1-3 sentences, grounded in the target post.'
                     . ' If the target asks a personal question, answer in a way consistent with the persona context.'
+                    . ' Do not invent personal facts. If pet ownership is unknown, prefer saying you do not have pets.'
                     . ' ' . trim($knownFactsLine)
                     . ' Do not add links, code blocks, signatures, or generic filler.'
                     . ' Do not end with a question unless the target explicitly asks for clarification.',
@@ -8225,7 +8226,7 @@ function konvo_run_reply(array $cfg): void
     $expertiseScopeRule = konvo_bot_expertise_scope_rule($botSlug);
     $personalContinuityRule = 'Personal continuity rule: when asked personal questions, keep answers consistent with known persona facts. '
         . $personaFactsLine
-        . ' If no known fact exists, it is fine to say you do not have pets instead of inventing details.';
+        . ' Do not invent personal details. If pet ownership is unknown, prefer saying you do not have pets.';
     $cadenceMeta = konvo_question_cadence_should_force_question($botUsername);
     $replyCadenceIndex = (int)($cadenceMeta['next_index'] ?? 1);
     $forceQuestionCadence = (bool)($cadenceMeta['force_question'] ?? false)
