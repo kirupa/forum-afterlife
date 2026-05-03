@@ -6088,6 +6088,125 @@ function konvo_extract_urls_loose(string $text): array
     return array_keys($out);
 }
 
+function konvo_is_kirupa_domain_url(string $url): bool
+{
+    $u = trim((string)$url);
+    if ($u === '') {
+        return false;
+    }
+    return (bool)preg_match('#^https?://(?:www\.)?kirupa\.com(?:/|$)#i', $u);
+}
+
+function konvo_url_exists_quick(string $url, int $timeout = 6): bool
+{
+    static $cache = [];
+    $u = trim((string)$url);
+    if ($u === '') {
+        return false;
+    }
+    if (isset($cache[$u])) {
+        return (bool)$cache[$u];
+    }
+    $ok = konvo_fetch_text_url_quick($u, $timeout) !== '';
+    $cache[$u] = $ok;
+    return $ok;
+}
+
+function konvo_kirupa_search_terms_from_url(string $url): string
+{
+    $path = (string)(parse_url($url, PHP_URL_PATH) ?? '');
+    $leaf = trim((string)basename($path));
+    $leaf = preg_replace('/\.(htm|html|md|txt)$/i', '', $leaf) ?? $leaf;
+    $leaf = str_replace(['_', '-', '+'], ' ', (string)$leaf);
+    $leaf = preg_replace('/\s+/', ' ', (string)$leaf) ?? $leaf;
+    return trim((string)$leaf);
+}
+
+function konvo_find_valid_kirupa_replacement_url(string $badUrl, string $title, string $targetRaw): string
+{
+    $queries = [];
+    $fromUrl = konvo_kirupa_search_terms_from_url($badUrl);
+    if ($fromUrl !== '') {
+        $queries[] = $fromUrl;
+        $queries[] = $fromUrl . ' kirupa';
+    }
+
+    $context = trim((string)$title . "\n" . (string)$targetRaw);
+    $context = preg_replace('/https?:\/\/\S+/i', ' ', $context) ?? $context;
+    $context = preg_replace('/\s+/', ' ', (string)$context) ?? $context;
+    $context = trim((string)$context);
+    if ($context !== '') {
+        if (strlen($context) > 180) {
+            $context = trim((string)substr($context, 0, 180));
+        }
+        $queries[] = $context;
+    }
+    $queries = array_values(array_unique(array_filter(array_map('trim', $queries))));
+    if ($queries === []) {
+        return '';
+    }
+
+    $debug = [];
+    $candidates = konvo_live_search_kirupa_candidates($queries, [$badUrl], 5, $debug);
+    foreach ($candidates as $c) {
+        $u = trim((string)($c['url'] ?? ''));
+        if ($u === '' || !konvo_is_kirupa_domain_url($u)) {
+            continue;
+        }
+        if (preg_match('/\.(md|txt)(?:$|\?)/i', $u)) {
+            continue;
+        }
+        if (konvo_url_exists_quick($u, 6)) {
+            return $u;
+        }
+    }
+    return '';
+}
+
+function konvo_enforce_valid_kirupa_urls(string $text, string $title, string $targetRaw): string
+{
+    $out = (string)$text;
+    $urls = konvo_extract_urls_loose($out);
+    if ($urls === []) {
+        return $out;
+    }
+    foreach ($urls as $uRaw) {
+        $u = trim((string)$uRaw);
+        if ($u === '' || !konvo_is_kirupa_domain_url($u)) {
+            continue;
+        }
+        if (konvo_url_exists_quick($u, 6)) {
+            continue;
+        }
+        $replacement = konvo_find_valid_kirupa_replacement_url($u, $title, $targetRaw);
+        if ($replacement !== '') {
+            $out = str_replace($u, $replacement, $out);
+            continue;
+        }
+        // If no valid replacement is found, drop the invalid kirupa URL.
+        $out = str_replace($u, '', $out);
+    }
+    $out = preg_replace('/\n{3,}/', "\n\n", $out) ?? $out;
+    $out = preg_replace('/[ \t]{2,}/', ' ', $out) ?? $out;
+    return trim((string)$out);
+}
+
+function konvo_resolve_valid_kirupa_url(string $url, string $title, string $targetRaw): string
+{
+    $u = trim((string)$url);
+    if ($u === '') {
+        return '';
+    }
+    if (!konvo_is_kirupa_domain_url($u)) {
+        return $u;
+    }
+    if (konvo_url_exists_quick($u, 6)) {
+        return $u;
+    }
+    $replacement = konvo_find_valid_kirupa_replacement_url($u, $title, $targetRaw);
+    return $replacement !== '' ? $replacement : '';
+}
+
 function konvo_reply_adds_new_details_pass(string $replyText, array $posts, string $currentBotUsername, int $window = 5): array
 {
     $replyText = trim((string)$replyText);
@@ -7929,7 +8048,10 @@ function konvo_run_reply(array $cfg): void
     }
     $articleLine = '';
     if (is_array($article) && isset($article['title'], $article['url'])) {
-        $articleLine = "I found a related kirupa.com article that can help you go deeper into this topic:\n\n{$article['url']}";
+        $articleUrl = konvo_resolve_valid_kirupa_url((string)$article['url'], $title, $lastRaw);
+        if ($articleUrl !== '') {
+            $articleLine = "I found a related kirupa.com article that can help you go deeper into this topic:\n\n{$articleUrl}";
+        }
     }
     if ($kirupaBotCuratorMode) {
         $resourceTargetRaw = ($lastUsername !== '' && strtolower(trim($lastUsername)) === 'kirupabot' && trim($topicOpRaw) !== '')
@@ -9335,6 +9457,7 @@ function konvo_run_reply(array $cfg): void
         $replyText = trim((string)$replyText);
     }
     $replyText = konvo_force_standalone_urls($replyText);
+    $replyText = konvo_enforce_valid_kirupa_urls($replyText, $title, $lastRaw);
     $replyText = konvo_sanitize_output_security($replyText);
     if (konvo_output_looks_sensitive($replyText)) {
         $replyText = konvo_safe_refusal_reply($signature);
@@ -9513,6 +9636,10 @@ function konvo_run_reply(array $cfg): void
             if ($url === '') {
                 continue;
             }
+            $url = konvo_resolve_valid_kirupa_url($url, $title, $lastRaw);
+            if ($url === '') {
+                continue;
+            }
             $key = function_exists('kirupa_normalize_url_key') ? kirupa_normalize_url_key($url) : strtolower(trim($url));
             if ($key !== '' && isset($replyUrlMap[$key])) {
                 continue;
@@ -9623,9 +9750,11 @@ function konvo_run_reply(array $cfg): void
         }
         if (is_array($deeperArticle) && isset($deeperArticle['url'])) {
             $deeperUrl = trim((string)$deeperArticle['url']);
+            $deeperUrl = konvo_resolve_valid_kirupa_url($deeperUrl, $title, $lastRaw);
             if ($deeperUrl !== '') {
                 $replyText = rtrim((string)$replyText) . "\n\nI found a related kirupa.com article that can help you go deeper into this topic:\n\n" . $deeperUrl;
                 $replyText = konvo_force_standalone_urls($replyText);
+                $replyText = konvo_enforce_valid_kirupa_urls($replyText, $title, $lastRaw);
                 $replyText = konvo_repair_url_artifacts($replyText);
                 $replyText = konvo_sanitize_output_security($replyText);
                 $replyText = konvo_markdown_code_integrity_pass($replyText);
