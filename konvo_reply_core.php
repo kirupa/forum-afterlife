@@ -3234,14 +3234,14 @@ function konvo_repair_url_artifacts(string $text): string
     $text = preg_replace('/\byoutube\s*\.\s*com\b/i', 'youtube.com', $text) ?? $text;
     $text = preg_replace('/\byoutu\s*\.\s*be\b/i', 'youtu.be', $text) ?? $text;
 
-    // Remove stray spaces/newlines inside URL runs.
-    $text = preg_replace_callback('/https?:\/\/[^\n]+/i', static function ($m) {
+    // Remove stray spaces/newlines inside URL tokens only.
+    $text = preg_replace_callback('/https?:\/\/[^\s<>()]+/i', static function ($m) {
         $u = (string)($m[0] ?? '');
         return preg_replace('/\s+/', '', $u) ?? $u;
     }, $text) ?? $text;
     // Repair accidentally wrapped direct YouTube URLs split across whitespace/newlines.
     $text = preg_replace_callback(
-        '/https?:\/\/\s*(?:www\.)?\s*(?:youtube\.com|youtu\.be)\s*\/\s*[^\s]+(?:\s+[^\s]+)*/i',
+        '/https?:\/\/\s*(?:www\.)?\s*(?:youtube\.com\s*\/\s*(?:watch\s*\?\s*v\s*=\s*[A-Za-z0-9_-]{6,}|shorts\s*\/\s*[A-Za-z0-9_-]{6,}|live\s*\/\s*[A-Za-z0-9_-]{6,})|youtu\.be\s*\/\s*[A-Za-z0-9_-]{6,})/i',
         static function ($m) {
             $u = (string)($m[0] ?? '');
             $u = preg_replace('/\s+/', '', $u) ?? $u;
