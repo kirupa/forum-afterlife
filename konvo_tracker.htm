@@ -355,7 +355,7 @@
           const topicTitle = p.topic_title || "(untitled)";
 
           return `
-            <tr data-topic-id="${topicId}">
+            <tr data-topic-id="${topicId}" data-post-number="${Number(p.post_number || 0)}">
               <td><a href="${BASE}${esc(p.post_url || "")}" target="_blank" rel="noopener noreferrer">${esc(topicTitle)}</a></td>
               <td>${esc(p.username || "")}</td>
               <td>${isThreadCreation ? '<span class="pill warn">Thread creation</span>' : '<span class="pill ok">Response</span>'}</td>
@@ -387,7 +387,7 @@
                     <option value="kirupabot">kirupaBot - Helpful Guide</option>
                   </select>
                 </label>
-                <button class="btn reply-btn" data-topic-id="${topicId}" data-topic-title="${esc(topicTitle)}">Generate Reply Preview</button>
+                <button class="btn reply-btn" data-topic-id="${topicId}" data-topic-title="${esc(topicTitle)}" data-post-number="${Number(p.post_number || 0)}">Generate Reply Preview</button>
               </td>
             </tr>
           `;
@@ -440,6 +440,23 @@
       document.getElementById("previewReply").value = "";
     }
 
+    async function readJsonOrThrow(res, contextLabel) {
+      const raw = await res.text();
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        const compact = String(raw || "").replace(/\s+/g, " ").trim();
+        const snippet = compact.slice(0, 220) || "(empty response)";
+        throw new Error(`${contextLabel} returned non-JSON (HTTP ${res.status}): ${snippet}`);
+      }
+      if (!res.ok || !data || !data.ok) {
+        const msg = (data && data.error) ? data.error : `${contextLabel} failed (HTTP ${res.status})`;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
     async function replyAsBot(topicId, topicTitle, botName, buttonEl) {
       const note = document.getElementById("actionNote");
       buttonEl.disabled = true;
@@ -448,21 +465,25 @@
       const row = buttonEl.closest("tr");
       const targetSelect = row ? row.querySelector(".target-select") : null;
       const replyTarget = targetSelect ? targetSelect.value : "latest";
+      const rowPostNumber = Number(buttonEl.getAttribute("data-post-number") || (row ? row.getAttribute("data-post-number") : 0) || 0);
+      const targetPostNumber = replyTarget === "latest" ? rowPostNumber : 0;
 
-      note.textContent = `Generating preview for ${botName} in "${topicTitle}" (target: ${replyTarget})...`;
+      note.textContent = `Generating preview for ${botName} in "${topicTitle}" (target: ${replyTarget}${targetPostNumber > 0 ? `, post #${targetPostNumber}` : ""})...`;
 
       try {
         const form = new FormData();
         form.append("topic_id", String(topicId));
         form.append("reply_target", replyTarget);
+        if (targetPostNumber > 0) {
+          form.append("target_post_number", String(targetPostNumber));
+        }
         form.append("preview_only", "1");
         const endpoint = endpointForBot(botName);
 
         const res = await fetch(endpoint, { method: "POST", body: form });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || "Failed to generate preview.");
+        const data = await readJsonOrThrow(res, "Preview request");
 
-        currentPreview = { endpoint, topicId, replyTarget, botName, topicTitle };
+        currentPreview = { endpoint, topicId, replyTarget, targetPostNumber, botName, topicTitle };
         document.getElementById("previewMeta").textContent =
           `Target used: ${data.target_used || replyTarget} (post #${data.target_post_number || "?"} by @${data.target_username || "unknown"})`;
         document.getElementById("previewTarget").textContent = data.target_content || "(No target content found)";
@@ -496,11 +517,13 @@
         const form = new FormData();
         form.append("topic_id", String(currentPreview.topicId));
         form.append("reply_target", currentPreview.replyTarget);
+        if (Number(currentPreview.targetPostNumber || 0) > 0) {
+          form.append("target_post_number", String(currentPreview.targetPostNumber));
+        }
         form.append("approved_reply", replyText);
 
         const res = await fetch(currentPreview.endpoint, { method: "POST", body: form });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || "Failed to post edited reply.");
+        const data = await readJsonOrThrow(res, "Post request");
 
         const botNames = Array.isArray(data.bots_in_conversation) && data.bots_in_conversation.length
           ? data.bots_in_conversation.join(", ")

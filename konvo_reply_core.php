@@ -83,11 +83,57 @@ set_exception_handler(static function (\Throwable $e): void {
     konvo_internal_error_out('Reply endpoint error: ' . $msg . ' [' . $where . ']', 500);
 });
 
+register_shutdown_function(static function (): void {
+    $err = error_get_last();
+    if (!is_array($err)) {
+        return;
+    }
+    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+    $type = (int)($err['type'] ?? 0);
+    if (!in_array($type, $fatalTypes, true)) {
+        return;
+    }
+    $msg = trim((string)($err['message'] ?? 'Fatal shutdown error'));
+    $file = basename((string)($err['file'] ?? 'unknown'));
+    $line = (int)($err['line'] ?? 0);
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(500);
+    }
+    echo json_encode(
+        ['ok' => false, 'error' => 'Reply endpoint fatal: ' . $msg . ' [' . $file . ':' . $line . ']'],
+        JSON_UNESCAPED_SLASHES
+    );
+});
+
 function konvo_json_out(array $data, int $status = 200): void
 {
     http_response_code($status);
     echo json_encode($data, JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+function konvo_emergency_safe_reply_text(string $title, string $targetRaw, string $opRaw): string
+{
+    $targetRaw = trim($targetRaw);
+    $opRaw = trim($opRaw);
+    $lc = strtolower($targetRaw);
+    if ($targetRaw === '') {
+        return 'Fair point.';
+    }
+    if (preg_match('/\b(copy|copied|verbatim|same answer|word for word)\b/i', $targetRaw)) {
+        return "You’re right — that was too close to your wording.\n\nI should’ve answered your point directly instead of echoing it.";
+    }
+    if (preg_match('/\bhow did you come up with\b/i', $lc)) {
+        return "Mostly from seeing this pattern repeat in real projects.\n\nWhen tools remove friction, they can also hide intent, and that tradeoff keeps showing up.";
+    }
+    if (str_contains($targetRaw, '?')) {
+        return "Good question.\n\nMy short take is that convenience helps speed, but it can blur the craft choices people used to notice.";
+    }
+    if ($opRaw !== '') {
+        return "I see what you mean.\n\nThe part that stands out to me is how quickly convenience can flatten the details that made a choice feel intentional.";
+    }
+    return 'Yeah, that makes sense to me.';
 }
 
 function konvo_call_api(string $url, array $headers, ?array $payload = null, string $method = ''): array
@@ -7632,13 +7678,17 @@ function konvo_run_reply(array $cfg): void
             ]);
         }
     }
-    $article = function_exists('kirupa_find_relevant_article_scored_excluding')
-        ? kirupa_find_relevant_article_scored_excluding($title . "\n" . $lastRaw, $existingUrls, 2)
-        : kirupa_find_relevant_article_excluding($title . "\n" . $lastRaw, $existingUrls, 2);
-    if (!is_array($article) && $isTechnicalTopic) {
+    $article = null;
+    $shouldLookupArticle = $isTechnicalTopic || $isKirupaBot || $forceKirupaLink;
+    if ($shouldLookupArticle) {
         $article = function_exists('kirupa_find_relevant_article_scored_excluding')
-            ? kirupa_find_relevant_article_scored_excluding($title . "\n" . $lastRaw . "\n" . $prevRaw, $existingUrls, 1)
-            : kirupa_find_relevant_article_excluding($title . "\n" . $lastRaw . "\n" . $prevRaw, $existingUrls, 1);
+            ? kirupa_find_relevant_article_scored_excluding($title . "\n" . $lastRaw, $existingUrls, 2)
+            : kirupa_find_relevant_article_excluding($title . "\n" . $lastRaw, $existingUrls, 2);
+        if (!is_array($article) && $isTechnicalTopic) {
+            $article = function_exists('kirupa_find_relevant_article_scored_excluding')
+                ? kirupa_find_relevant_article_scored_excluding($title . "\n" . $lastRaw . "\n" . $prevRaw, $existingUrls, 1)
+                : kirupa_find_relevant_article_excluding($title . "\n" . $lastRaw . "\n" . $prevRaw, $existingUrls, 1);
+        }
     }
     $articleLine = '';
     if (is_array($article) && isset($article['title'], $article['url'])) {
