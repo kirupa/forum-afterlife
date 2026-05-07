@@ -323,7 +323,6 @@ function casual_normalize_signature(string $text, string $signature): string
 function casual_quirky_media_urls(): array
 {
     return array(
-        'https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif',
         'https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif',
         'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif',
         'https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif',
@@ -334,12 +333,53 @@ function casual_quirky_media_urls(): array
     );
 }
 
+function casual_media_url_is_reachable(string $url): bool
+{
+    $u = trim($url);
+    if ($u === '' || !preg_match('/^https?:\/\/\S+$/i', $u)) return false;
+    static $cache = array();
+    if (isset($cache[$u])) return (bool)$cache[$u];
+
+    if (!function_exists('curl_init')) {
+        $cache[$u] = false;
+        return false;
+    }
+
+    $ch = curl_init($u);
+    curl_setopt_array($ch, array(
+        CURLOPT_NOBODY => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_USERAGENT => 'konvo-casual-worker/1.0',
+    ));
+    curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $ctype = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    $ok = ($err === '' && $status >= 200 && $status < 400 && preg_match('/\b(image|video)\b/i', $ctype));
+    $cache[$u] = (bool)$ok;
+    return (bool)$ok;
+}
+
 function casual_pick_quirky_media_url(string $seed): string
 {
     $urls = casual_quirky_media_urls();
     if ($urls === array()) return '';
     $hash = abs((int)crc32(strtolower(trim($seed))));
-    return (string)$urls[$hash % count($urls)];
+    $count = count($urls);
+    $start = $hash % $count;
+    for ($i = 0; $i < $count; $i++) {
+        $idx = ($start + $i) % $count;
+        $cand = trim((string)$urls[$idx]);
+        if ($cand !== '' && casual_media_url_is_reachable($cand)) {
+            return $cand;
+        }
+    }
+    return '';
 }
 
 function casual_append_quirky_media_before_signature(string $raw, string $signature, string $url): string

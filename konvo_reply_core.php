@@ -3994,7 +3994,6 @@ function konvo_find_relevant_youtube_video_url(string $query, string $mode = 'me
 function konvo_quirky_media_urls(): array
 {
     return [
-        'https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif',
         'https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif',
         'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif',
         'https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif',
@@ -4005,6 +4004,40 @@ function konvo_quirky_media_urls(): array
     ];
 }
 
+function konvo_media_url_is_reachable(string $url): bool
+{
+    $u = trim($url);
+    if ($u === '' || !preg_match('/^https?:\/\/\S+$/i', $u)) {
+        return false;
+    }
+    static $cache = [];
+    if (isset($cache[$u])) {
+        return (bool)$cache[$u];
+    }
+    if (!function_exists('curl_init')) {
+        $cache[$u] = false;
+        return false;
+    }
+    $ch = curl_init($u);
+    curl_setopt_array($ch, [
+        CURLOPT_NOBODY => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_USERAGENT => 'konvo-bot/1.0',
+    ]);
+    curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $ctype = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    $ok = ($err === '' && $status >= 200 && $status < 400 && preg_match('/\b(image|video)\b/i', $ctype));
+    $cache[$u] = (bool)$ok;
+    return (bool)$ok;
+}
+
 function konvo_pick_quirky_media_url(string $seed): string
 {
     $urls = konvo_quirky_media_urls();
@@ -4012,7 +4045,16 @@ function konvo_pick_quirky_media_url(string $seed): string
         return '';
     }
     $hash = abs((int)crc32(strtolower(trim($seed))));
-    return (string)$urls[$hash % count($urls)];
+    $count = count($urls);
+    $start = $hash % $count;
+    for ($i = 0; $i < $count; $i++) {
+        $idx = ($start + $i) % $count;
+        $cand = trim((string)$urls[$idx]);
+        if ($cand !== '' && konvo_media_url_is_reachable($cand)) {
+            return $cand;
+        }
+    }
+    return '';
 }
 
 function konvo_is_question_like(string $text): bool
