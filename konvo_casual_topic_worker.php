@@ -149,6 +149,66 @@ function casual_remember_topic(string $title, string $planAngle): void
     casual_save_recent_topics($items);
 }
 
+function casual_consensus_state_path(): string
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir . '/casual_consensus_state.json';
+}
+
+function casual_consensus_load(): array
+{
+    $path = casual_consensus_state_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function casual_consensus_save(array $state): void
+{
+    $clean = array();
+    $now = time();
+    foreach ($state as $k => $row) {
+        $id = (string)$k;
+        if (!preg_match('/^\d+$/', $id)) continue;
+        if (!is_array($row)) continue;
+        $createdTs = isset($row['created_ts']) ? (int)$row['created_ts'] : $now;
+        if (($now - $createdTs) > (14 * 24 * 3600)) continue;
+        $clean[$id] = $row;
+    }
+    @file_put_contents(casual_consensus_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function casual_consensus_register_topic(int $topicId, array $bot, string $title, int $categoryId, array $plan): void
+{
+    if ($topicId <= 0) return;
+    $state = casual_consensus_load();
+    $key = (string)$topicId;
+    $now = time();
+    $state[$key] = array(
+        'topic_id' => $topicId,
+        'title' => trim($title),
+        'category_id' => $categoryId,
+        'op_bot' => strtolower(trim((string)($bot['username'] ?? ''))),
+        'op_signature' => trim((string)($bot['name'] ?? '')),
+        'phase' => 'open',
+        'created_ts' => $now,
+        'updated_ts' => $now,
+        'discussion_reply_count' => 0,
+        'participant_bots' => array(),
+        'consensus_posted' => false,
+        'consensus_post_id' => 0,
+        'plan_mood' => trim((string)($plan['mood'] ?? '')),
+        'plan_angle' => trim((string)($plan['angle'] ?? '')),
+        'plan_intent' => trim((string)($plan['posting_intent'] ?? '')),
+    );
+    casual_consensus_save($state);
+}
+
 function casual_recent_hint_lines(array $recent): string
 {
     $lines = array();
@@ -452,8 +512,14 @@ function casual_validate_generated_topic(string $title, string $raw): array
     if (casual_looks_too_technical($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic looked too technical');
     }
-    if (!casual_is_design_topic($title . "\n" . $raw) && !casual_is_ai_or_tech_topic($title . "\n" . $raw)) {
-        return array('ok' => false, 'error' => 'topic was outside design/ai/technology focus');
+    if (!casual_title_looks_question_like($title) || !str_ends_with($title, '?')) {
+        return array('ok' => false, 'error' => 'title must be an open question');
+    }
+    if (!str_contains($raw, '?')) {
+        return array('ok' => false, 'error' => 'body must include an open question');
+    }
+    if (!casual_is_ai_or_tech_topic($title . "\n" . $raw)) {
+        return array('ok' => false, 'error' => 'topic must be AI/technology focused');
     }
     if (!casual_has_depth_signal($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic did not show enough depth');
@@ -631,22 +697,22 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         : 'Generate the best first draft now.';
 
     $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
-        . 'You generate a single thoughtful, conversation-worthy forum topic starter for humans. '
+        . 'You generate a single open-question forum topic starter for humans. '
         . 'Return ONLY JSON with this schema: '
         . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","title":"...","raw":"..."}. '
-        . 'Rules: topic must be about design, AI, technology, the web, digital culture, software tools, or how people interact with software. '
-        . 'It should feel somewhat profound without sounding academic or robotic. '
-        . 'Anchor the topic around one non-obvious observation, tradeoff, tension, second-order effect, or subtle design/technology insight. '
-        . 'Avoid coding help requests, implementation details, product launch news, politics, religion, rage bait, tragedy, and empty hot takes. '
+        . 'Rules: topic must be about AI, software, developer tools, web platform behavior, or technology tradeoffs in real work. '
+        . 'Do not produce architecture showcase chatter, link shares, GIF posts, product launch reposts, or news summaries. '
+        . 'Anchor the topic around one practical tension or tradeoff and ask for lived experience from others. '
+        . 'Avoid coding help requests, implementation details, politics, religion, rage bait, tragedy, and empty hot takes. '
         . 'Use natural human language, concise and reflective. '
-        . 'Title: 5-12 words, complete thought, intriguing, no colon, no clickbait, no emoji. '
-        . 'Body: 3-5 short sentences max, ideally split into 2 short paragraphs. Start with the observation, then deepen it. '
-        . 'A closing question is optional only if it feels genuinely earned, not forced. '
+        . 'Title: 6-13 words, complete thought, must end with a question mark, no colon, no clickbait, no emoji. '
+        . 'Body: 2-4 short sentences max split into 2 short paragraphs. '
+        . 'The final sentence MUST be one open discussion question ending with "?". '
         . 'No links, no hashtags, no code blocks. '
         . 'Do not sign the post; Discourse already shows the author username.';
 
-    $user = "Generate one new thoughtful forum topic now.\n"
-        . "Desired domains: design, AI, technology, the web, digital culture, creative tools.\n"
+    $user = "Generate one new AI/technology discussion question now.\n"
+        . "Desired domains: AI, technology, software workflows, web platform, digital product tradeoffs.\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
         . $strictLine;
 
@@ -791,38 +857,17 @@ if (!is_array($generated) || empty($generated['ok'])) {
 $title = (string)$generated['title'];
 $raw = (string)$generated['raw'];
 $plan = isset($generated['plan']) && is_array($generated['plan']) ? $generated['plan'] : array();
-$categoryDecision = casual_pick_category_with_llm($title, $raw, $bot, $plan);
-$categoryId = (int)($categoryDecision['category_id'] ?? (int)KONVO_TALK_CATEGORY_ID);
-$gamingDetected = ($categoryId === (int)KONVO_GAMING_CATEGORY_ID);
-if ($gamingDetected) {
-    if (strtolower((string)($bot['username'] ?? '')) !== 'vaultboy') {
-        $vaultboyBot = casual_find_bot($bots, 'vaultboy');
-        if (is_array($vaultboyBot)) {
-            $bot = $vaultboyBot;
-            $signatureSeed = strtolower((string)($bot['username'] ?? 'vaultboy') . '|casual-topic|' . date('Y-m-d-H'));
-            $signature = function_exists('konvo_signature_with_optional_emoji')
-                ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'VaultBoy'), $signatureSeed)
-                : (string)($bot['name'] ?? 'VaultBoy');
-            $vgRes = casual_generate_with_llm($bot, $signature, $recent, true);
-            if (!empty($vgRes['ok'])) {
-                $title = (string)$vgRes['title'];
-                $raw = (string)$vgRes['raw'];
-                $plan = isset($vgRes['plan']) && is_array($vgRes['plan']) ? $vgRes['plan'] : $plan;
-                $categoryDecision = casual_pick_category_with_llm($title, $raw, $bot, $plan);
-                $categoryId = (int)($categoryDecision['category_id'] ?? (int)KONVO_TALK_CATEGORY_ID);
-                $gamingDetected = ($categoryId === (int)KONVO_GAMING_CATEGORY_ID);
-            } else {
-                $raw = casual_normalize_signature($raw, $signature);
-            }
-        }
-    }
-}
-$quirkySeed = abs((int)crc32(strtolower((string)($bot['username'] ?? 'baymax') . '|casual-quirky|' . $title . '|' . substr($raw, 0, 180))));
-$quirkyMode = (($quirkySeed % 100) < 14);
-$quirkyMediaUrl = $quirkyMode ? casual_pick_quirky_media_url((string)($bot['username'] ?? 'baymax') . '|' . $title . '|' . $raw) : '';
-if ($quirkyMediaUrl !== '') {
-    $raw = casual_append_quirky_media_before_signature($raw, $signature, $quirkyMediaUrl);
-}
+$categoryDecision = array(
+    'ok' => true,
+    'category_key' => 'talk',
+    'category_id' => (int)KONVO_TALK_CATEGORY_ID,
+    'reason' => 'forced_ai_tech_discussion_mode',
+    'confidence' => 1.0,
+);
+$categoryId = (int)KONVO_TALK_CATEGORY_ID;
+$gamingDetected = false;
+$quirkyMode = false;
+$quirkyMediaUrl = '';
 
 if ($dryRun) {
     casual_out(200, array(
@@ -862,6 +907,7 @@ $topicId = (int)($post['body']['topic_id'] ?? 0);
 $postNumber = (int)($post['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
 casual_remember_topic($title, (string)($plan['angle'] ?? ''));
+casual_consensus_register_topic($topicId, $bot, $title, $categoryId, $plan);
 
 casual_out(200, array(
     'ok' => true,

@@ -109,6 +109,162 @@ function save_seen_topics($state)
     @file_put_contents(state_path(), json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
+function worker_consensus_state_path()
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    return $dir . '/casual_consensus_state.json';
+}
+
+function worker_consensus_load()
+{
+    $path = worker_consensus_state_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function worker_consensus_save($state)
+{
+    if (!is_array($state)) $state = array();
+    $clean = array();
+    $now = time();
+    foreach ($state as $k => $row) {
+        $id = (string)$k;
+        if (!preg_match('/^\d+$/', $id)) continue;
+        if (!is_array($row)) continue;
+        $created = isset($row['created_ts']) ? (int)$row['created_ts'] : $now;
+        if (($now - $created) > (14 * 24 * 3600)) continue;
+        $clean[$id] = $row;
+    }
+    @file_put_contents(worker_consensus_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function worker_find_topic_stub_by_id($topics, $topicId)
+{
+    $id = (int)$topicId;
+    if ($id <= 0 || !is_array($topics)) return null;
+    foreach ($topics as $t) {
+        if (!is_array($t)) continue;
+        if ((int)($t['id'] ?? 0) === $id) return $t;
+    }
+    return null;
+}
+
+function worker_pick_consensus_topic($topics, $consensusState, $seenState)
+{
+    if (!is_array($topics) || !is_array($consensusState) || $consensusState === array()) {
+        return null;
+    }
+    $now = time();
+    $candidates = array();
+    foreach ($consensusState as $idStr => $row) {
+        if (!is_array($row)) continue;
+        $topicId = (int)$idStr;
+        if ($topicId <= 0) continue;
+        $phase = strtolower(trim((string)($row['phase'] ?? 'open')));
+        $consensusPosted = !empty($row['consensus_posted']);
+        if ($consensusPosted || $phase === 'closed') continue;
+
+        $createdTs = isset($row['created_ts']) ? (int)$row['created_ts'] : 0;
+        $updatedTs = isset($row['updated_ts']) ? (int)$row['updated_ts'] : $createdTs;
+        $age = ($createdTs > 0) ? ($now - $createdTs) : 0;
+        if ($age < 8 * 60 || $age > 72 * 3600) continue;
+
+        $discussionCount = (int)($row['discussion_reply_count'] ?? 0);
+        if ($discussionCount >= 5) continue;
+
+        $topic = worker_find_topic_stub_by_id($topics, $topicId);
+        if (!is_array($topic)) continue;
+        $visible = isset($topic['visible']) ? (bool)$topic['visible'] : true;
+        $closed = isset($topic['closed']) ? (bool)$topic['closed'] : false;
+        $archived = isset($topic['archived']) ? (bool)$topic['archived'] : false;
+        if (!$visible || $closed || $archived) continue;
+
+        $seenBoost = isset($seenState[(string)$topicId]) ? 1 : 0;
+        $score = 0;
+        $score += max(0, 4 - $discussionCount) * 10;
+        $score += ($phase === 'open') ? 6 : 2;
+        $score -= $seenBoost * 4;
+        $score += ($age < 6 * 3600) ? 6 : 0;
+        $score -= ($now - max($updatedTs, $createdTs) < 6 * 60) ? 8 : 0;
+
+        $candidates[] = array(
+            'score' => $score,
+            'topic' => $topic,
+            'state' => $row,
+            'topic_id' => $topicId,
+        );
+    }
+    if ($candidates === array()) return null;
+    usort($candidates, function ($a, $b) {
+        $sa = (int)($a['score'] ?? 0);
+        $sb = (int)($b['score'] ?? 0);
+        if ($sa === $sb) return 0;
+        return ($sa > $sb) ? -1 : 1;
+    });
+    return $candidates[0];
+}
+
+function worker_pick_consensus_bot($bots, $latestUsername, $stateRow)
+{
+    if (!is_array($bots) || $bots === array()) return null;
+    $excludeLatest = strtolower(trim((string)$latestUsername));
+    $opBot = strtolower(trim((string)($stateRow['op_bot'] ?? '')));
+    $participants = isset($stateRow['participant_bots']) && is_array($stateRow['participant_bots']) ? $stateRow['participant_bots'] : array();
+    $participantSet = array();
+    foreach ($participants as $p) {
+        $k = strtolower(trim((string)$p));
+        if ($k !== '') $participantSet[$k] = true;
+    }
+
+    $fresh = array();
+    $fallback = array();
+    foreach ($bots as $bot) {
+        if (!is_array($bot)) continue;
+        $u = strtolower(trim((string)($bot['username'] ?? '')));
+        if ($u === '' || $u === $excludeLatest || $u === $opBot) continue;
+        $fallback[] = $bot;
+        if (!isset($participantSet[$u])) {
+            $fresh[] = $bot;
+        }
+    }
+    if ($fresh !== array()) {
+        shuffle($fresh);
+        return $fresh[0];
+    }
+    if ($fallback !== array()) {
+        shuffle($fallback);
+        return $fallback[0];
+    }
+    return pick_bot($bots, $latestUsername);
+}
+
+function worker_consensus_mark_posted_reply(&$consensusState, $topicId, $botUsername, $postNumber = 0)
+{
+    if (!is_array($consensusState)) return;
+    $key = (string)((int)$topicId);
+    if ($key === '0' || !isset($consensusState[$key]) || !is_array($consensusState[$key])) return;
+    $row = $consensusState[$key];
+    $participants = isset($row['participant_bots']) && is_array($row['participant_bots']) ? $row['participant_bots'] : array();
+    $u = strtolower(trim((string)$botUsername));
+    if ($u !== '' && !in_array($u, array_map('strtolower', array_map('strval', $participants)), true)) {
+        $participants[] = $u;
+    }
+    $row['participant_bots'] = array_values(array_unique(array_map('strval', $participants)));
+    $row['discussion_reply_count'] = max(0, (int)($row['discussion_reply_count'] ?? 0)) + 1;
+    $row['updated_ts'] = time();
+    if ((int)$row['discussion_reply_count'] >= 3) {
+        $row['phase'] = 'ready_for_consensus';
+    } else {
+        $row['phase'] = 'open';
+    }
+    $row['last_reply_post_number'] = (int)$postNumber;
+    $consensusState[$key] = $row;
+}
+
 function worker_all_bot_signature_aliases()
 {
     return array(
@@ -4801,7 +4957,11 @@ if (!is_array($latest) || !isset($latest['topic_list']['topics']) || !is_array($
 }
 
 $seen = load_seen_topics();
-$topic = pick_candidate_topic($latest['topic_list']['topics'], $seen);
+$consensusState = worker_consensus_load();
+$consensusPick = worker_pick_consensus_topic($latest['topic_list']['topics'], $consensusState, $seen);
+$consensusFlowActive = is_array($consensusPick) && isset($consensusPick['topic']) && is_array($consensusPick['topic']);
+$consensusTopicState = $consensusFlowActive && isset($consensusPick['state']) && is_array($consensusPick['state']) ? $consensusPick['state'] : array();
+$topic = $consensusFlowActive ? $consensusPick['topic'] : pick_candidate_topic($latest['topic_list']['topics'], $seen);
 if (!is_array($topic)) {
     out_json(200, array('ok' => true, 'posted' => false, 'reason' => 'No eligible recent topics found.'));
 }
@@ -4930,7 +5090,12 @@ if ($targetIsBot) {
 }
 
 // Don't reply to yourself: pick a bot that is different from the latest poster.
-$bot = pick_bot($bots, $latestUsername);
+$bot = $consensusFlowActive
+    ? worker_pick_consensus_bot($bots, $latestUsername, $consensusTopicState)
+    : pick_bot($bots, $latestUsername);
+if (!is_array($bot) || !isset($bot['username'])) {
+    $bot = pick_bot($bots, $latestUsername);
+}
 $botLower = strtolower(trim((string)($bot['username'] ?? '')));
 if (
     $botLower === 'kirupabot'
@@ -4959,6 +5124,13 @@ $forceAnsweredBotToBotContrarianTop = $targetIsBot
     && !$learnerFollowupModeTop;
 if ($forceAnsweredBotToBotContrarianTop) {
     $forceContrarianReply = true;
+}
+if ($consensusFlowActive) {
+    $discussionCount = (int)($consensusTopicState['discussion_reply_count'] ?? 0);
+    if ($discussionCount >= 2) {
+        $forceContrarianReply = true;
+    }
+    $allowNoReply = true;
 }
 $recentOtherBotPosts = worker_recent_other_bot_posts($posts, (string)($bot['username'] ?? ''), 5);
 $recentSameBotPosts = worker_recent_same_bot_posts($posts, (string)($bot['username'] ?? ''), 3);
@@ -5040,7 +5212,9 @@ $isCodeTopic = is_codey_topic($topicTitle, $targetRaw);
 $isGamingTopicTop = worker_is_gaming_topic($topicTitle, $targetRaw . "\n" . $threadOpRaw);
 $isSolutionProblemThreadTop = worker_is_solution_problem_thread($topicTitle . "\n" . $targetRaw . "\n" . $threadOpRaw);
 $chance = 0.0;
-if ($isGamingTopicTop) {
+if ($consensusFlowActive) {
+    $chance = 0.0;
+} elseif ($isGamingTopicTop) {
     $chance = $targetIsBot ? 0.85 : 0.75;
 } elseif ($wantsReferenceLink) {
     $chance = $targetIsBot ? 0.35 : 0.25;
@@ -5082,6 +5256,10 @@ if (!empty($pollMeta['encountered'])) {
     $shouldIncludeLink = false;
     $related = null;
 }
+if ($consensusFlowActive) {
+    $shouldIncludeLink = false;
+    $related = null;
+}
 
 $topicContextText = $topicTitle . "\n";
 $topicContextPosts = worker_bounded_thread_posts($posts, worker_dedup_scan_cap());
@@ -5090,6 +5268,13 @@ foreach ($topicContextPosts as $ctxPost) {
     $topicContextText .= worker_compact_post_text(post_content_text($ctxPost), 1200) . "\n";
 }
 $recentThreadContext = worker_recent_posts_context($posts, 5, 900);
+if ($consensusFlowActive) {
+    $topicContextText .= "\nConsensus workflow context:\n"
+        . "- This thread is in discussion mode for AI/tech consensus.\n"
+        . "- Add one concrete new angle only; do not summarize prior replies.\n"
+        . "- Keep it brief, conversational, and human.\n"
+        . "- Prefer practical tradeoffs and real-world constraints.\n";
+}
 
 $replyText = generate_reply_text(
     $bot,
@@ -5323,6 +5508,10 @@ if ($dryRun) {
             'latest_username' => $latestUsername,
             'latest_is_bot' => $targetIsBot,
         ),
+        'consensus_flow' => array(
+            'active' => $consensusFlowActive,
+            'state' => $consensusTopicState,
+        ),
         'selected_bot' => $bot,
         'recent_other_bot_posts' => $recentOtherBotPosts,
         'bot_streak_guard' => array(
@@ -5382,6 +5571,13 @@ $postUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
 worker_question_cadence_record_post((string)($bot['username'] ?? ''));
 $seen[(string)$topicId] = time();
 save_seen_topics($seen);
+if ($consensusFlowActive) {
+    worker_consensus_mark_posted_reply($consensusState, $topicId, (string)($bot['username'] ?? ''), $postNumber);
+    worker_consensus_save($consensusState);
+    if (isset($consensusState[(string)$topicId]) && is_array($consensusState[(string)$topicId])) {
+        $consensusTopicState = $consensusState[(string)$topicId];
+    }
+}
 
 $solvedMeta = array(
     'attempted' => false,
@@ -5417,6 +5613,10 @@ out_json(200, array(
         'op_username' => $opUsername,
         'latest_username' => $latestUsername,
         'latest_is_bot' => $targetIsBot,
+    ),
+    'consensus_flow' => array(
+        'active' => $consensusFlowActive,
+        'state' => $consensusTopicState,
     ),
     'selected_bot' => $bot,
     'recent_other_bot_posts' => $recentOtherBotPosts,
