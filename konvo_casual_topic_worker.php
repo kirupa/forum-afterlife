@@ -228,6 +228,163 @@ function casual_recent_hint_lines(array $recent): string
     return $lines === array() ? '(none)' : implode("\n", $lines);
 }
 
+function casual_fetch_latest_topic_titles(int $max = 120): array
+{
+    if (!function_exists('curl_init')) return array();
+    $titles = array();
+    $page = 0;
+    $maxPages = 6;
+    while ($page < $maxPages && count($titles) < $max) {
+        $url = rtrim(KONVO_BASE_URL, '/') . '/latest.json?order=created&ascending=false&page=' . $page;
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_HTTPHEADER => array(
+                'Api-Key: ' . KONVO_API_KEY,
+                'Api-Username: kirupa',
+            ),
+        ));
+        $body = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        if ($err !== '' || $status < 200 || $status >= 300 || !is_string($body) || trim($body) === '') {
+            break;
+        }
+        $json = json_decode($body, true);
+        if (!is_array($json)) break;
+        $topics = $json['topic_list']['topics'] ?? array();
+        if (!is_array($topics) || $topics === array()) break;
+        foreach ($topics as $topic) {
+            $t = trim((string)($topic['title'] ?? ''));
+            if ($t === '') continue;
+            $titles[] = $t;
+            if (count($titles) >= $max) break;
+        }
+        $page++;
+    }
+    return array_values(array_unique($titles));
+}
+
+function casual_normalized_title_key(string $title): string
+{
+    $s = strtolower(trim($title));
+    if ($s === '') return '';
+    $s = preg_replace('/https?:\/\/\S+/i', ' ', $s) ?? $s;
+    $s = preg_replace('/[^a-z0-9\s]/', ' ', $s) ?? $s;
+    $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+    return trim($s);
+}
+
+function casual_title_terms(string $title): array
+{
+    $s = casual_normalized_title_key($title);
+    if ($s === '') return array();
+    $parts = preg_split('/\s+/', $s);
+    if (!is_array($parts)) return array();
+    $stop = array('the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be', 'it', 'that', 'this', 'how', 'what', 'when', 'why', 'does', 'do', 'should', 'can', 'could');
+    $out = array();
+    foreach ($parts as $p) {
+        $p = trim((string)$p);
+        if ($p === '' || strlen($p) < 3) continue;
+        if (in_array($p, $stop, true)) continue;
+        $out[$p] = true;
+    }
+    return array_keys($out);
+}
+
+function casual_title_similarity_score(string $a, string $b): float
+{
+    $ta = casual_title_terms($a);
+    $tb = casual_title_terms($b);
+    if ($ta === array() || $tb === array()) return 0.0;
+    $setA = array_fill_keys($ta, true);
+    $setB = array_fill_keys($tb, true);
+    $inter = 0;
+    foreach ($setA as $k => $_) {
+        if (isset($setB[$k])) $inter++;
+    }
+    $union = count($setA) + count($setB) - $inter;
+    if ($union <= 0) return 0.0;
+    return (float)$inter / (float)$union;
+}
+
+function casual_title_too_similar_to_recent(string $candidateTitle, array $recentTitles): bool
+{
+    $ck = casual_normalized_title_key($candidateTitle);
+    if ($ck === '') return true;
+    foreach ($recentTitles as $rt) {
+        $rt = trim((string)$rt);
+        if ($rt === '') continue;
+        if (casual_normalized_title_key($rt) === $ck) return true;
+        $sim = casual_title_similarity_score($candidateTitle, $rt);
+        if ($sim >= 0.64) return true;
+    }
+    return false;
+}
+
+function casual_uniqueness_gate_with_llm(string $candidateTitle, string $candidateRaw, array $recentLocal, array $recentForum): array
+{
+    if (KONVO_OPENAI_API_KEY === '') {
+        return array('ok' => true, 'passes' => true, 'score' => 3.5, 'reason' => 'no_api_key_skip');
+    }
+
+    $localLines = casual_recent_hint_lines($recentLocal);
+    $forumLines = array();
+    $max = min(35, count($recentForum));
+    for ($i = 0; $i < $max; $i++) {
+        $t = trim((string)($recentForum[$i] ?? ''));
+        if ($t === '') continue;
+        $forumLines[] = '- ' . $t;
+    }
+    $forumHints = $forumLines === array() ? '(none)' : implode("\n", $forumLines);
+
+    $system = 'You are a strict novelty judge for forum topic proposals. '
+        . 'Return ONLY JSON with schema: {"passes":true|false,"novelty_score":0-5,"reason":"...","closest_match":"...","rewrite_hint":"..."}. '
+        . 'Pass only when the candidate is clearly different in angle from recent topics, not merely reworded.';
+    $user = "Candidate title:\n{$candidateTitle}\n\nCandidate body:\n{$candidateRaw}\n\n"
+        . "Recent topics from this worker:\n{$localLines}\n\n"
+        . "Recent forum topics:\n{$forumHints}\n\n"
+        . "Judge novelty now.";
+    $payload = array(
+        'model' => konvo_model_for_task('topic_uniqueness'),
+        'messages' => array(
+            array('role' => 'system', 'content' => $system),
+            array('role' => 'user', 'content' => $user),
+        ),
+        'temperature' => 0.1,
+    );
+
+    $res = casual_openai_json($payload);
+    if (!$res['ok']) {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_llm_error');
+    }
+    $content = trim((string)($res['json']['choices'][0]['message']['content'] ?? ''));
+    if ($content === '') {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_empty');
+    }
+    $obj = casual_extract_json_object($content);
+    if (!is_array($obj) || $obj === array()) {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_parse_error');
+    }
+    $passes = !empty($obj['passes']);
+    $score = (float)($obj['novelty_score'] ?? 0.0);
+    if ($score < 0.0) $score = 0.0;
+    if ($score > 5.0) $score = 5.0;
+    $reason = trim((string)($obj['reason'] ?? ''));
+    $closest = trim((string)($obj['closest_match'] ?? ''));
+    $hint = trim((string)($obj['rewrite_hint'] ?? ''));
+    return array(
+        'ok' => true,
+        'passes' => $passes && $score >= 4.0,
+        'score' => $score,
+        'reason' => $reason === '' ? 'no_reason' : $reason,
+        'closest_match' => $closest,
+        'rewrite_hint' => $hint,
+    );
+}
+
 function casual_pick_bot(array $bots): array
 {
     if ($bots === array()) {
@@ -682,7 +839,7 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
     );
 }
 
-function casual_generate_with_llm(array $bot, string $signature, array $recent, bool $strict): array
+function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = ''): array
 {
     $botName = trim((string)($bot['name'] ?? 'BayMax'));
     $soulKey = trim((string)($bot['soul_key'] ?? strtolower($botName)));
@@ -695,6 +852,18 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     $strictLine = $strict
         ? 'Your previous draft was too close to a recent topic, too code-heavy, too shallow, or not thoughtful enough. Regenerate with a different angle and a stronger insight or tradeoff.'
         : 'Generate the best first draft now.';
+
+    $forumRecentLines = array();
+    $maxForum = min(26, count($recentForumTitles));
+    for ($i = 0; $i < $maxForum; $i++) {
+        $t = trim((string)($recentForumTitles[$i] ?? ''));
+        if ($t === '') continue;
+        $forumRecentLines[] = '- ' . $t;
+    }
+    $forumRecentHints = $forumRecentLines === array() ? '(none)' : implode("\n", $forumRecentLines);
+
+    $extraAvoidance = trim($extraAvoidance);
+    $extraAvoidanceLine = $extraAvoidance !== '' ? ("Special avoidance instruction:\n" . $extraAvoidance . "\n\n") : '';
 
     $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
         . 'You generate a single open-question forum topic starter for humans. '
@@ -709,11 +878,14 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'Body: 2-4 short sentences max split into 2 short paragraphs. '
         . 'The final sentence MUST be one open discussion question ending with "?". '
         . 'No links, no hashtags, no code blocks. '
-        . 'Do not sign the post; Discourse already shows the author username.';
+        . 'Do not sign the post; Discourse already shows the author username. '
+        . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording.';
 
     $user = "Generate one new AI/technology discussion question now.\n"
         . "Desired domains: AI, technology, software workflows, web platform, digital product tradeoffs.\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
+        . "Recent forum topics to avoid paraphrasing:\n{$forumRecentHints}\n\n"
+        . $extraAvoidanceLine
         . $strictLine;
 
     $payload = array(
@@ -823,23 +995,85 @@ if (KONVO_OPENAI_API_KEY === '') {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+$force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+
+if (!$dryRun && !$allowNewTopics && !$force) {
+    casual_out(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+    ));
+}
+
 $bot = casual_pick_bot($bots);
 $signatureSeed = strtolower((string)($bot['username'] ?? 'baymax') . '|casual-topic|' . date('Y-m-d-H'));
 $signature = function_exists('konvo_signature_with_optional_emoji')
     ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'BayMax'), $signatureSeed)
     : (string)($bot['name'] ?? 'BayMax');
 $recent = casual_load_recent_topics();
+$recentForumTitles = casual_fetch_latest_topic_titles(120);
 
 $attempts = array();
 $generated = null;
-for ($i = 0; $i < 3; $i++) {
+$bestFallback = null;
+$bestFallbackScore = -1.0;
+$extraAvoidance = '';
+$requestStartTs = isset($_SERVER['REQUEST_TIME_FLOAT']) ? (float)$_SERVER['REQUEST_TIME_FLOAT'] : microtime(true);
+for ($i = 0; $i < 4; $i++) {
+    if ((microtime(true) - $requestStartTs) > 32.0) {
+        break;
+    }
     $strict = $i > 0;
-    $res = casual_generate_with_llm($bot, $signature, $recent, $strict);
+    $res = casual_generate_with_llm($bot, $signature, $recent, $recentForumTitles, $strict, $extraAvoidance);
+    if (!empty($res['ok'])) {
+        $tooSimilar = casual_title_too_similar_to_recent((string)($res['title'] ?? ''), $recentForumTitles);
+        if ($tooSimilar) {
+            $res = array('ok' => false, 'error' => 'title too similar to recent forum topics', 'title' => (string)($res['title'] ?? ''));
+        }
+    }
+    if (!empty($res['ok'])) {
+        $gate = casual_uniqueness_gate_with_llm((string)$res['title'], (string)$res['raw'], $recent, $recentForumTitles);
+        $res['uniqueness_gate'] = $gate;
+        if (!empty($gate['ok']) && empty($gate['passes'])) {
+            $score = (float)($gate['score'] ?? 0.0);
+            if ($score > $bestFallbackScore) {
+                $bestFallbackScore = $score;
+                $bestFallback = $res;
+            }
+            $res = array(
+                'ok' => false,
+                'error' => 'uniqueness gate rejected candidate',
+                'gate' => $gate,
+                'title' => (string)($res['title'] ?? ''),
+            );
+        } elseif (empty($gate['ok'])) {
+            // If novelty gate itself fails, keep best generated draft so we don't hard-fail.
+            if ($bestFallback === null) {
+                $bestFallback = $res;
+                $bestFallbackScore = 3.6;
+            }
+        }
+    }
     $attempts[] = $res;
     if (!empty($res['ok'])) {
         $generated = $res;
         break;
     }
+    $err = trim((string)($res['error'] ?? ''));
+    $gateHint = is_array($res['gate'] ?? null) ? trim((string)($res['gate']['rewrite_hint'] ?? '')) : '';
+    $closest = is_array($res['gate'] ?? null) ? trim((string)($res['gate']['closest_match'] ?? '')) : '';
+    $pieces = array();
+    if ($err !== '') $pieces[] = $err;
+    if ($closest !== '') $pieces[] = 'Too close to: ' . $closest;
+    if ($gateHint !== '') $pieces[] = 'Rewrite hint: ' . $gateHint;
+    $extraAvoidance = implode(' ', $pieces);
+}
+
+if (!is_array($generated) && is_array($bestFallback) && $bestFallback !== array()) {
+    $generated = $bestFallback;
 }
 
 if (!is_array($generated) || empty($generated['ok'])) {
