@@ -6591,7 +6591,108 @@ function konvo_is_micro_reaction_duplicate(string $reply, string $reference): bo
     return false;
 }
 
-function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $recentOtherBotPosts, array $recentSameBotPosts): array
+function konvo_extract_question_clauses(string $text): array
+{
+    $text = str_replace(["\r\n", "\r"], "\n", trim((string)$text));
+    if ($text === '' || strpos($text, '?') === false) {
+        return [];
+    }
+    $parts = preg_split('/[?\n]+/', $text);
+    if (!is_array($parts)) return [];
+    $out = [];
+    foreach ($parts as $part) {
+        $p = trim((string)$part);
+        if ($p === '') continue;
+        $p = preg_replace('/\s+/', ' ', $p) ?? $p;
+        $p = trim((string)$p);
+        if ($p === '') continue;
+        if (strlen($p) < 16) continue;
+        $out[] = $p . '?';
+    }
+    return array_values(array_unique($out));
+}
+
+function konvo_normalize_question_key(string $q): string
+{
+    $s = strtolower(trim((string)$q));
+    if ($s === '') return '';
+    $s = preg_replace('/https?:\/\/\S+/i', ' ', $s) ?? $s;
+    $s = preg_replace('/[^a-z0-9\s]/i', ' ', $s) ?? $s;
+    $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+    $tokens = preg_split('/\s+/', trim((string)$s));
+    if (!is_array($tokens)) return '';
+    $stop = [
+        'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be',
+        'it', 'this', 'that', 'do', 'does', 'did', 'can', 'could', 'would', 'should', 'will',
+        'i', 'you', 'we', 'they', 'my', 'your', 'our', 'their', 'anyone', 'someone'
+    ];
+    $keep = [];
+    foreach ($tokens as $tok) {
+        $tok = trim((string)$tok);
+        if ($tok === '' || strlen($tok) < 3) continue;
+        if (in_array($tok, $stop, true)) continue;
+        $keep[] = $tok;
+    }
+    if ($keep === []) return trim((string)$s);
+    return implode(' ', array_values(array_unique($keep)));
+}
+
+function konvo_find_duplicate_question_in_thread(string $candidateReply, array $posts, string $currentBotUsername = ''): ?array
+{
+    $candidateQuestions = konvo_extract_question_clauses($candidateReply);
+    if ($candidateQuestions === []) return null;
+
+    $self = strtolower(trim((string)$currentBotUsername));
+    $seenQuestions = [];
+    foreach ($posts as $post) {
+        if (!is_array($post)) continue;
+        $username = strtolower(trim((string)($post['username'] ?? '')));
+        if ($self !== '' && $username === $self) continue;
+        $raw = trim(konvo_post_content_text($post));
+        if ($raw === '') continue;
+        $qs = konvo_extract_question_clauses($raw);
+        if ($qs === []) continue;
+        foreach ($qs as $q) {
+            $seenQuestions[] = [
+                'q' => $q,
+                'post_number' => (int)($post['post_number'] ?? 0),
+                'username' => (string)($post['username'] ?? ''),
+            ];
+        }
+    }
+    if ($seenQuestions === []) return null;
+
+    foreach ($candidateQuestions as $candQ) {
+        $candKey = konvo_normalize_question_key($candQ);
+        foreach ($seenQuestions as $prior) {
+            $priorQ = (string)($prior['q'] ?? '');
+            if ($priorQ === '') continue;
+            $priorKey = konvo_normalize_question_key($priorQ);
+            if ($candKey !== '' && $priorKey !== '' && $candKey === $priorKey) {
+                return [
+                    'post_number' => (int)($prior['post_number'] ?? 0),
+                    'username' => (string)($prior['username'] ?? ''),
+                    'similarity' => 1.0,
+                    'candidate_question' => $candQ,
+                    'prior_question' => $priorQ,
+                ];
+            }
+            $sim = konvo_similarity_score($candQ, $priorQ);
+            if ($sim >= 0.62) {
+                return [
+                    'post_number' => (int)($prior['post_number'] ?? 0),
+                    'username' => (string)($prior['username'] ?? ''),
+                    'similarity' => (float)$sim,
+                    'candidate_question' => $candQ,
+                    'prior_question' => $priorQ,
+                ];
+            }
+        }
+    }
+    return null;
+}
+
+function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $recentOtherBotPosts, array $recentSameBotPosts, array $posts = [], string $currentBotUsername = ''): array
 {
     if (
         konvo_is_probable_duplicate_text($reply, $targetRaw, 0.54)
@@ -6629,6 +6730,16 @@ function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $r
             return ['skip' => true, 'reason' => 'duplicate_of_own_recent_reply'];
         }
     }
+
+    $dupeQuestion = konvo_find_duplicate_question_in_thread($reply, $posts, $currentBotUsername);
+    if (is_array($dupeQuestion)) {
+        return [
+            'skip' => true,
+            'reason' => 'duplicate_question_already_asked',
+            'duplicate_question' => $dupeQuestion,
+        ];
+    }
+
     return ['skip' => false, 'reason' => ''];
 }
 
@@ -9905,7 +10016,7 @@ function konvo_run_reply(array $cfg): void
     }
     $duplicateGate = ($thanksAckMode || $manualEditMode)
         ? ['skip' => false, 'reason' => '']
-        : konvo_detect_duplicate_reply($replyText, $lastRaw, $recentOtherBotPosts, $recentSameBotPosts);
+        : konvo_detect_duplicate_reply($replyText, $lastRaw, $recentOtherBotPosts, $recentSameBotPosts, $posts, $botUsername);
 
     $lowValueGate = konvo_should_skip_low_value_reply(
         $replyText,
@@ -10003,8 +10114,6 @@ function konvo_run_reply(array $cfg): void
             'bot_chain_too_dense',
             'bot_chain_no_additional_value',
             'similar_to_other_bot_without_new_value',
-            'question_thread_already_answered_no_new_value',
-            'bot_chain_question_already_covered',
         ];
         $lowReason = strtolower(trim((string)($lowValueGate['reason'] ?? '')));
         if (!empty($threadReplyPass['ok']) && !empty($threadReplyPass['should_reply'])) {
