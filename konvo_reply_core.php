@@ -5081,8 +5081,14 @@ function konvo_bounded_thread_posts(array $posts, int $maxPosts): array
 
 function konvo_recent_posts_context(array $posts, int $limit = 3, int $maxCharsPerPost = 900): string
 {
+    $rows = konvo_recent_posts_window($posts, $limit, $maxCharsPerPost, 0);
+    return konvo_recent_rows_context($rows, 'Recent thread context');
+}
+
+function konvo_recent_posts_window(array $posts, int $limit = 5, int $maxCharsPerPost = 900, int $beforePostNumber = 0): array
+{
     if ($limit <= 0) {
-        return 'Recent thread context: (none)';
+        return [];
     }
     $picked = [];
     for ($i = count($posts) - 1; $i >= 0; $i--) {
@@ -5090,20 +5096,47 @@ function konvo_recent_posts_context(array $posts, int $limit = 3, int $maxCharsP
         if (!is_array($post)) {
             continue;
         }
+        $pn = (int)($post['post_number'] ?? 0);
+        if ($beforePostNumber > 0 && $pn >= $beforePostNumber) {
+            continue;
+        }
         $raw = konvo_compact_post_text(konvo_post_content_text($post), $maxCharsPerPost);
         if ($raw === '') {
             continue;
         }
-        $picked[] = 'Post #' . (int)($post['post_number'] ?? 0) . ' by @' . (string)($post['username'] ?? '') . ":\n" . $raw;
+        $picked[] = [
+            'post_number' => $pn,
+            'username' => (string)($post['username'] ?? ''),
+            'raw' => $raw,
+        ];
         if (count($picked) >= $limit) {
             break;
         }
     }
     if ($picked === []) {
-        return 'Recent thread context: (none)';
+        return [];
     }
-    $picked = array_reverse($picked);
-    return "Recent thread context:\n" . implode("\n\n", $picked);
+    return array_reverse($picked);
+}
+
+function konvo_recent_rows_context(array $rows, string $label = 'Recent thread context'): string
+{
+    $label = trim($label);
+    if ($label === '') $label = 'Recent thread context';
+    if ($rows === []) {
+        return $label . ': (none)';
+    }
+    $out = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) continue;
+        $raw = trim((string)($row['raw'] ?? ''));
+        if ($raw === '') continue;
+        $out[] = 'Post #' . (int)($row['post_number'] ?? 0) . ' by @' . (string)($row['username'] ?? '') . ":\n" . $raw;
+    }
+    if ($out === []) {
+        return $label . ': (none)';
+    }
+    return $label . ":\n" . implode("\n\n", $out);
 }
 
 function konvo_full_thread_context(array $posts, int $maxCharsPerPost = 260, int $maxPosts = 80): string
@@ -8105,7 +8138,41 @@ function konvo_run_reply(array $cfg): void
     $prevContext = $prevPostNumber > 0
         ? "Previous context post (post #{$prevPostNumber} by @{$prevUsername}):\n{$prevRaw}"
         : 'Previous context post: (none)';
-    $recentContext = konvo_recent_posts_context($posts, 5, 900);
+    $latestPostNumber = 0;
+    for ($i = count($posts) - 1; $i >= 0; $i--) {
+        $post = $posts[$i] ?? null;
+        if (!is_array($post)) continue;
+        $pn = (int)($post['post_number'] ?? 0);
+        if ($pn > 0) {
+            $latestPostNumber = $pn;
+            break;
+        }
+    }
+    $usePriorFiveForDirect = ($lastPostNumber > 0 && $latestPostNumber > 0 && $lastPostNumber < $latestPostNumber);
+    $recentFiveRowsForUniq = $usePriorFiveForDirect
+        ? konvo_recent_posts_window($posts, 5, 900, $lastPostNumber)
+        : konvo_recent_posts_window($posts, 5, 900, 0);
+    $recentContextLabel = $usePriorFiveForDirect
+        ? 'Recent thread context (last five before target post)'
+        : 'Recent thread context (last five replies)';
+    $recentContext = konvo_recent_rows_context($recentFiveRowsForUniq, $recentContextLabel);
+    $recentFiveUniqContext = konvo_recent_rows_context(
+        $recentFiveRowsForUniq,
+        $usePriorFiveForDirect
+            ? 'Uniqueness guard context (five posts before the target)'
+            : 'Uniqueness guard context (last five replies)'
+    );
+    $recentFiveUniqPosts = [];
+    foreach ($recentFiveRowsForUniq as $row) {
+        if (!is_array($row)) continue;
+        $raw = trim((string)($row['raw'] ?? ''));
+        if ($raw === '') continue;
+        $recentFiveUniqPosts[] = [
+            'post_number' => (int)($row['post_number'] ?? 0),
+            'username' => (string)($row['username'] ?? ''),
+            'raw' => $raw,
+        ];
+    }
     $fullThreadContext = konvo_full_thread_context($posts, 220, konvo_llm_context_post_cap());
     $recentOtherBotPosts = konvo_recent_other_bot_posts($posts, $botUsername, 4);
     $recentOtherBotContext = konvo_recent_other_bot_context($recentOtherBotPosts);
@@ -8417,6 +8484,9 @@ function konvo_run_reply(array $cfg): void
         $forumVoiceRule = 'kirupaBot helper voice: short and friendly. Summarize earlier answers in plain language without adding your own diagnosis. Keep it concise.';
         $conversationFirstRule = 'Conversation-first rule: acknowledge the thread answers first, then guide readers to resources for deeper reading.';
     }
+    $lastFiveUniquenessRule = $usePriorFiveForDirect
+        ? 'Last-five uniqueness rule (mandatory): because you are replying to an earlier post, read the five posts immediately before the target post. Your reply must add a new angle not already present there. If those five already cover your point or question, output [[NO_REPLY]].'
+        : 'Last-five uniqueness rule (mandatory): read the last five replies before posting. Your reply must add one concrete new detail and must not restate any of those five in new words. If no new detail exists, output [[NO_REPLY]].';
     $botToBotThreadRule = $targetAuthorIsBot
         ? 'Bot-to-bot interaction rule: briefly reference one specific detail from @' . $lastUsername . '\'s post before adding your own take. Keep it casual and topical.'
         : '';
@@ -8789,6 +8859,8 @@ function konvo_run_reply(array $cfg): void
             . ' '
             . $generalQualityRule
             . ' '
+            . $lastFiveUniquenessRule
+            . ' '
             . $colloquialLanguageRule
             . ' '
             . $informationDensityRule
@@ -8853,7 +8925,7 @@ function konvo_run_reply(array $cfg): void
                 ],
                 [
                     'role' => 'user',
-                    'content' => "Topic title: {$title}\n\nTarget mode: {$replyTarget}\nTarget post to reply to (post #{$lastPostNumber} by @{$lastUsername}):\n{$lastRaw}\n\n{$prevContext}\n\n{$recentContext}\n\n{$recentOtherBotContext}\n\n{$recentSameBotContext}\n\n{$threadSaturatedContext}\n\n{$fullThreadContext}\n\n{$pollUserContext}\n\n{$kirupaBotCuratorPromptContext}\n\nKnown persona fact memory:\n{$personaFactsLine}\n\nIs this code related: " . ($isCodeQuestion ? 'yes' : 'no') . "\nIs this a color/palette request: " . ($isColorQuestion ? 'yes' : 'no') . "\n\nKirupa article context (if relevant, mention briefly): {$articleLine}\n{$solutionVideoLine}\n\nBefore finalizing, read every existing reply in this thread and identify one specific new detail you can add. Do not summarize prior replies. Different words, same idea is not additive.\n\nUse the full thread context above to keep this reply genuinely additive and non-redundant. If no new detail exists, output [[NO_REPLY]].\n\nWrite a direct reply to the target post as part of the conversation.",
+                    'content' => "Topic title: {$title}\n\nTarget mode: {$replyTarget}\nTarget post to reply to (post #{$lastPostNumber} by @{$lastUsername}):\n{$lastRaw}\n\n{$prevContext}\n\n{$recentContext}\n\n{$recentFiveUniqContext}\n\n{$recentOtherBotContext}\n\n{$recentSameBotContext}\n\n{$threadSaturatedContext}\n\n{$fullThreadContext}\n\n{$pollUserContext}\n\n{$kirupaBotCuratorPromptContext}\n\nKnown persona fact memory:\n{$personaFactsLine}\n\nIs this code related: " . ($isCodeQuestion ? 'yes' : 'no') . "\nIs this a color/palette request: " . ($isColorQuestion ? 'yes' : 'no') . "\n\nKirupa article context (if relevant, mention briefly): {$articleLine}\n{$solutionVideoLine}\n\nBefore finalizing, compare your draft against the last five relevant replies shown above (or the last five before the target post when direct-replying). Your draft must add a concrete new detail and must not re-ask the same question in different words.\n\nUse the full thread context above to keep this reply genuinely additive and non-redundant. If no new detail exists, output [[NO_REPLY]].\n\nWrite a direct reply to the target post as part of the conversation.",
                 ],
             ],
             'temperature' => (float)$cfg['temperature'],
@@ -10028,6 +10100,27 @@ function konvo_run_reply(array $cfg): void
         $isQuestionLike,
         $hasPollContext
     );
+    $lastFiveUniqGate = [
+        'applied' => false,
+        'adds_new_details' => true,
+        'reason' => 'not_applicable',
+        'window' => 0,
+        'window_requested' => 0,
+    ];
+    if (!$manualEditMode && !$thanksAckMode && $targetAuthorIsBot) {
+        $recentFiveWindow = max(1, count($recentFiveUniqPosts));
+        $lastFiveUniqGate = konvo_reply_adds_new_details_pass($replyText, $recentFiveUniqPosts, $botUsername, $recentFiveWindow);
+        $lastFiveUniqGate['applied'] = true;
+        if (empty($lastFiveUniqGate['adds_new_details']) && !$forceLowEffortCadence) {
+            $eval = is_array($lowValueGate['eval'] ?? null) ? $lowValueGate['eval'] : [];
+            $eval['last_five_uniqueness_gate'] = $lastFiveUniqGate;
+            $lowValueGate = [
+                'skip' => true,
+                'reason' => 'last_five_uniqueness_skip',
+                'eval' => $eval,
+            ];
+        }
+    }
     if ($thanksAckMode) {
         $eval = is_array($lowValueGate['eval'] ?? null) ? $lowValueGate['eval'] : [];
         $eval['thanks_ack_mode'] = true;
