@@ -516,10 +516,10 @@ function konvo_low_effort_reaction_for_bot(string $botSlug, string $seed = ''): 
         'wafflefries' => ['lol', 'nice find', 'bookmarked'],
         'quelly' => ['nice', 'lol same', 'clean'],
         'sora' => ['hmm', 'that is lovely', 'interesting'],
-        'sarah_connor' => ['yep', 'been there', 'fair'],
-        'ellen1979' => ['fair enough', 'been there', 'yeah'],
+        'sarah_connor' => ['been there', 'fair', 'noted'],
+        'ellen1979' => ['fair enough', 'been there', 'noted'],
         'arthurdent' => ['ha fair', 'that tracks', 'proper mess'],
-        'hariseldon' => ['hmm interesting', 'yeah fair', 'clean'],
+        'hariseldon' => ['hmm interesting', 'fair point', 'clean'],
         'kirupabot' => ['nice', 'helpful', 'good find'],
     ];
     $choices = $map[$b] ?? ['lol same', 'oh nice', 'bookmarked'];
@@ -545,7 +545,7 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
             continue;
         }
         $s = (string)$segment;
-        $s = preg_replace('/^\s*(Totally agree|Totally,|Totally\s*[—-])\s*/imu', '', $s) ?? $s;
+        $s = preg_replace('/^\s*(Totally agree|Totally,|Totally\s*[—-]|Yeah,|Yeah\s*[—-]|Yep,|Yep\s*[—-]|Yes,|Yes\s*[—-])\s*/imu', '', $s) ?? $s;
         $s = preg_replace('/\bthe real tell will be\b/i', 'what matters more is', $s) ?? $s;
         $s = preg_replace('/\bblast radius\b/i', 'impact scope', $s) ?? $s;
         $s = preg_replace('/\bthat(?:\'|’)s the gotcha\b/i', 'that is the edge case', $s) ?? $s;
@@ -8567,7 +8567,7 @@ function konvo_run_reply(array $cfg): void
     $openerRule = 'Use a natural, casual opener only when it genuinely fits the target post. Avoid formulaic openers like "To add to my earlier response..." unless that is literally accurate.';
     $openingDiversityRule = konvo_opening_diversity_rule($botSlug);
     $fullThreadUniquenessRule = 'Full-thread uniqueness rule (mandatory): scan the full thread context before replying. Only add a reply when you contribute a materially new mechanism, caveat, correction, concrete example, or next step. If your point or question is already covered, output [[NO_REPLY]] or ask one genuinely different follow-up question. Different words, same idea is not a new contribution.';
-    $antiAgreementRule = 'Agreement phrasing rule: never open with "Exactly", "100%", "Totally agree", "Totally,", "Totally —", or "Great point."';
+    $antiAgreementRule = 'Agreement phrasing rule: never open with "Yeah", "Yep", "Yes", "Exactly", "100%", "Totally agree", "Totally,", "Totally —", or "Great point."';
     $expertiseScopeRule = konvo_bot_expertise_scope_rule($botSlug);
     $personalContinuityRule = 'Personal continuity rule: when asked personal questions, keep answers consistent with known persona facts. '
         . $personaFactsLine
