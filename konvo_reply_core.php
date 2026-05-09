@@ -504,27 +504,86 @@ function konvo_uncertainty_phrase_for_bot(string $botSlug): string
     return $map[$b] ?? 'I might be wrong here.';
 }
 
-function konvo_low_effort_reaction_for_bot(string $botSlug, string $seed = ''): string
+function konvo_low_effort_reaction_for_bot(
+    string $botSlug,
+    string $seed = '',
+    string $openAiApiKey = '',
+    string $topicTitle = '',
+    string $targetRaw = '',
+    string $targetUsername = ''
+): string
 {
     $b = strtolower(trim((string)$botSlug));
-    $map = [
-        'baymax' => ['oh nice', 'lol yeah', 'that is clean'],
-        'vaultboy' => ['lol same', 'oh nice', 'that is wild'],
-        'mechaprime' => ['clean', 'fair point', 'nice'],
-        'yoshiii' => ['ha nice', 'bookmarked', 'oh cool'],
-        'bobamilk' => ['oh nice', 'love this', 'bookmarked'],
-        'wafflefries' => ['lol', 'nice find', 'bookmarked'],
-        'quelly' => ['nice', 'lol same', 'clean'],
-        'sora' => ['hmm', 'that is lovely', 'interesting'],
-        'sarah_connor' => ['been there', 'fair', 'noted'],
-        'ellen1979' => ['fair enough', 'been there', 'noted'],
-        'arthurdent' => ['ha fair', 'that tracks', 'proper mess'],
-        'hariseldon' => ['hmm interesting', 'fair point', 'clean'],
-        'kirupabot' => ['nice', 'helpful', 'good find'],
+    $personaStyle = [
+        'baymax' => 'direct and warm',
+        'vaultboy' => 'playful gamer energy',
+        'mechaprime' => 'crisp and no-nonsense',
+        'yoshiii' => 'light and energetic',
+        'bobamilk' => 'very brief, ESL, simple words',
+        'wafflefries' => 'internet-casual and punchy',
+        'quelly' => 'hands-on and upbeat',
+        'sora' => 'quiet and minimal',
+        'sarah_connor' => 'skeptical and practical',
+        'ellen1979' => 'calm and pragmatic',
+        'arthurdent' => 'wry and casual',
+        'hariseldon' => 'analytical but short',
+        'kirupabot' => 'helpful and concise',
     ];
-    $choices = $map[$b] ?? ['lol same', 'oh nice', 'bookmarked'];
-    $idx = abs((int)crc32(strtolower($b . '|' . $seed)));
-    return (string)$choices[$idx % count($choices)];
+    $style = $personaStyle[$b] ?? 'casual and concise';
+    $targetRaw = trim((string)$targetRaw);
+    $targetRaw = preg_replace('/\s+/', ' ', $targetRaw) ?? $targetRaw;
+    if (strlen($targetRaw) > 260) {
+        $targetRaw = trim((string)substr($targetRaw, 0, 260)) . '…';
+    }
+
+    if ($openAiApiKey !== '') {
+        $model = function_exists('konvo_model_for_task')
+            ? (string)konvo_model_for_task('low_effort_reaction', ['technical' => false])
+            : 'gpt-5.4-mini';
+        if ($model === '') $model = 'gpt-5.4-mini';
+        $payload = [
+            'model' => $model,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => 'Write one ultra-short forum reaction (1-5 words) that sounds human. '
+                        . 'No sign-off, no links, no hashtags, no code, no question mark. '
+                        . 'Avoid starting with "yeah", "yep", or "yes". '
+                        . 'Tone should be ' . $style . '.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => "Topic: {$topicTitle}\n"
+                        . "Replying to @" . trim((string)$targetUsername) . "\n"
+                        . "Target post excerpt: {$targetRaw}\n"
+                        . "Seed: {$seed}\n"
+                        . "Return plain text only.",
+                ],
+            ],
+            'temperature' => 0.9,
+            'max_tokens' => 16,
+        ];
+        $res = konvo_call_api(
+            'https://api.openai.com/v1/chat/completions',
+            [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $openAiApiKey,
+            ],
+            $payload
+        );
+        if ($res['ok'] && is_array($res['body']) && isset($res['body']['choices'][0]['message']['content'])) {
+            $txt = trim((string)$res['body']['choices'][0]['message']['content']);
+            $txt = preg_replace('/\s+/', ' ', $txt) ?? $txt;
+            $txt = preg_replace('/[?]+$/', '', $txt) ?? $txt;
+            $txt = trim((string)$txt);
+            if ($txt !== '' && strlen($txt) <= 48 && str_word_count($txt) <= 5 && !preg_match('/^(yeah|yep|yes)\b/i', $txt)) {
+                return $txt;
+            }
+        }
+    }
+
+    // Minimal safety fallback when model call is unavailable.
+    return 'noted';
 }
 
 function konvo_enforce_banned_phrase_cleanup(string $text): string
@@ -10067,7 +10126,14 @@ function konvo_run_reply(array $cfg): void
     }
     if ($forceLowEffortCadence && !$manualEditMode && !$thanksAckMode && !$kirupaBotCuratorMode) {
         if (!konvo_is_low_effort_reaction($replyText)) {
-            $replyText = konvo_low_effort_reaction_for_bot($botSlug, $title . '|' . $lastPostNumber . '|' . $lastUsername);
+            $replyText = konvo_low_effort_reaction_for_bot(
+                $botSlug,
+                $title . '|' . $lastPostNumber . '|' . $lastUsername,
+                $openAiApiKey,
+                $title,
+                $lastRaw,
+                $lastUsername
+            );
             $replyText = konvo_apply_micro_grammar_fixes($replyText);
             $replyText = konvo_strip_foreign_bot_name_noise($replyText, $botUsername);
             $replyText = konvo_normalize_signature($replyText, $signature);
@@ -10079,7 +10145,14 @@ function konvo_run_reply(array $cfg): void
         if (trim((string)$replyText) === '') {
             $replyText = $forceQuestionCadence
                 ? 'Could you share one concrete detail so we can narrow this down?'
-                : konvo_low_effort_reaction_for_bot($botSlug, $title . '|nontech-code-strip|' . $lastPostNumber);
+                : konvo_low_effort_reaction_for_bot(
+                    $botSlug,
+                    $title . '|nontech-code-strip|' . $lastPostNumber,
+                    $openAiApiKey,
+                    $title,
+                    $lastRaw,
+                    $lastUsername
+                );
         }
         $replyText = konvo_apply_micro_grammar_fixes($replyText);
         $replyText = konvo_strip_foreign_bot_name_noise($replyText, $botUsername);
