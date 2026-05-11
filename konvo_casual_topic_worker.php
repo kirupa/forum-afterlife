@@ -33,6 +33,7 @@ if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.c
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
 if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
+if (!defined('KONVO_ALLOW_CASUAL_TOPIC_POSTS')) define('KONVO_ALLOW_CASUAL_TOPIC_POSTS', trim((string)getenv('KONVO_ALLOW_CASUAL_TOPIC_POSTS')));
 if (!defined('KONVO_TALK_CATEGORY_ID')) define('KONVO_TALK_CATEGORY_ID', 34);
 if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42);
 if (!defined('KONVO_GAMING_CATEGORY_ID')) define('KONVO_GAMING_CATEGORY_ID', 115);
@@ -998,13 +999,18 @@ $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
 $force = isset($_GET['force']) && (string)$_GET['force'] === '1';
 $allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
 $allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+$allowCasualEnv = strtolower(trim((string)KONVO_ALLOW_CASUAL_TOPIC_POSTS));
+$allowCasualTopics = ($allowCasualEnv === '')
+    ? true
+    : in_array($allowCasualEnv, array('1', 'true', 'yes', 'on'), true);
+$allowPosting = $allowNewTopics || $allowCasualTopics;
 
-if (!$dryRun && !$allowNewTopics && !$force) {
+if (!$dryRun && !$allowPosting && !$force) {
     casual_out(200, array(
         'ok' => true,
         'posted' => false,
         'reason' => 'new_topic_creation_disabled',
-        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+        'hint' => 'Set KONVO_ALLOW_CASUAL_TOPIC_POSTS=1 (or KONVO_ALLOW_NEW_TOPICS=1) or pass force=1 to override.',
     ));
 }
 
@@ -1014,6 +1020,22 @@ $signature = function_exists('konvo_signature_with_optional_emoji')
     ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'BayMax'), $signatureSeed)
     : (string)($bot['name'] ?? 'BayMax');
 $recent = casual_load_recent_topics();
+$today = date('Y-m-d');
+if (!$dryRun && !$force && is_array($recent) && $recent !== array()) {
+    $last = $recent[0] ?? null;
+    if (is_array($last)) {
+        $lastTs = (int)($last['ts'] ?? 0);
+        if ($lastTs > 0 && date('Y-m-d', $lastTs) === $today) {
+            casual_out(200, array(
+                'ok' => true,
+                'posted' => false,
+                'reason' => 'already_posted_today',
+                'date' => $today,
+                'last_title' => (string)($last['title'] ?? ''),
+            ));
+        }
+    }
+}
 $recentForumTitles = casual_fetch_latest_topic_titles(120);
 
 $attempts = array();
