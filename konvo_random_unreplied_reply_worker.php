@@ -3494,6 +3494,20 @@ function worker_recent_has_human($posts, $limit = 6)
     return false;
 }
 
+function worker_count_human_replies_after_op($posts)
+{
+    if (!is_array($posts) || count($posts) <= 1) return 0;
+    $count = 0;
+    for ($i = 1; $i < count($posts); $i++) {
+        $post = $posts[$i] ?? null;
+        if (!is_array($post)) continue;
+        $u = trim((string)($post['username'] ?? ''));
+        if ($u === '') continue;
+        if (!is_bot_user($u)) $count++;
+    }
+    return $count;
+}
+
 function worker_recent_posts_context($posts, $limit = 5, $maxCharsPerPost = 900)
 {
     if (!is_array($posts) || $posts === array()) return 'Recent thread context: (none)';
@@ -4204,6 +4218,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $allowNonTechnicalCodeSnippets = $isTechnicalTopic || $isCodey || $targetHasCodeContext;
     $isMemeGifThread = worker_is_meme_gif_context($topicTitle . "\n" . $opRaw . "\n" . (string)$topicContextText);
     $isSolutionProblemThread = worker_is_solution_problem_thread($topicTitle . "\n" . $opRaw . "\n" . (string)$topicContextText);
+    $hasExternalSourceContext = (bool)preg_match('/https?:\/\/\S+/i', $topicTitle . "\n" . $opRaw . "\n" . (string)$topicContextText . "\n" . (string)$threadOpRaw);
     $targetAuthorIsBot = is_bot_user($opUsername);
     $targetIsQuestionLike = worker_is_question_like_text($opRaw);
     $threadOpLower = strtolower(trim((string)$threadOpUsername));
@@ -4216,6 +4231,10 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $learnerFollowupMode = $botIsTopicOp && $opLooksHelpSeekingQuestion && !$targetIsTopicOp && trim((string)$opRaw) !== '';
     $isTechnicalQuestion = $isTechnicalTopic && $targetIsQuestionLike;
     $isSimpleClarification = $isTechnicalQuestion && worker_is_simple_clarification_question($opRaw);
+    $shouldDeepenCoreTopic = !$targetIsQuestionLike
+        && !$isMemeGifThread
+        && !$learnerFollowupMode
+        && ($isTechnicalTopic || $isSolutionProblemThread || $hasExternalSourceContext);
     $hasPriorSameBot = (is_array($recentSameBotPosts) && $recentSameBotPosts !== array());
     $latestSameBotPostRaw = '';
     if ($hasPriorSameBot) {
@@ -4385,6 +4404,8 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         $botToneRule = 'Simple clarification mode: answer directly in 1-2 short sentences (max 35 words), no code block, no bullets, no headings, no extra elaboration unless asked.';
     } elseif ($isTechnicalQuestion) {
         $botToneRule = 'Technical question mode: answer-first and concise in 2-3 sentences max. Use short sentences and blank lines between distinct ideas.';
+    } elseif ($shouldDeepenCoreTopic) {
+        $botToneRule = 'Core-topic deepening mode: concise 2-3 sentences max. Explain one underlying why with one concrete mechanism/constraint and one practical implication.';
     } elseif (strtolower($botUsername) === 'bobamilk') {
         $botToneRule = 'Extra brief tone for BobaMilk: 1-2 short sentences, simple wording, ESL-friendly phrasing, no extra flourish.';
     } elseif (strtolower($botUsername) === 'yoshiii') {
@@ -4433,18 +4454,23 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $learnerFollowupRule = $learnerFollowupMode
         ? 'OP follow-up rule: you asked the original question. Keep the reply brief and conversational, and do not force gratitude language.'
         : '';
+    $deeperResearchRule = $shouldDeepenCoreTopic
+        ? 'Deepening rule: do not stop at what happened. Push one level deeper into why it matters in practice, tied directly to the thread topic.'
+        : '';
     $systemIntro = $learnerFollowupMode
         ? 'Reply as the original poster following up to someone else\'s answer. Keep it conversational and concise.'
         : ($isSimpleClarification
         ? 'Reply to this simple definitional technical question with an answer-first concise clarification.'
         : ($isTechnicalQuestion
         ? 'Reply to this technical question in a single conversational pass: answer first, keep it concise, and use blank lines between distinct ideas.'
-        : 'Reply to a topic starter naturally. Write like a real forum user in a hurry. Keep it to one short sentence by default; at most two only if technical clarity requires it.'));
+        : ($shouldDeepenCoreTopic
+        ? 'Reply as a topical discussion participant and advance the conversation with one concrete why/mechanism insight.'
+        : 'Reply to a topic starter naturally. Write like a real forum user in a hurry. Keep it to one short sentence by default; at most two only if technical clarity requires it.')));
     $system = $soul . ' ' . $systemIntro . ' '
         . $botToneRule . ' ' . $botRoleRule . ' If the topic asks a question, answer in the first clause, then add a brief qualifier. '
         . 'Never end on a dangling fragment; if you shorten, keep the thought complete. '
         . 'If listing 3 or more items, use markdown bullet points with one item per line. '
-        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' Do not sign your post; the forum already shows your username.';
+        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $deeperResearchRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' Do not sign your post; the forum already shows your username.';
     $user = "Topic title: {$topicTitle}\n"
         . "OP username: @{$opUsername}\n"
         . "OP content:\n" . substr($opRaw, 0, 1200) . "\n\n"
@@ -4456,7 +4482,11 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . $saturatedContext . "\n\n"
         . $pollContextBlock . "\n\n"
         . "Before finalizing, read every existing response in the thread and identify one specific new detail to add. Do not summarize existing responses. Different words, same idea is not additive.\n\n"
-        . "Use the thread context above to keep the reply varied and additive. If no new detail exists, output [[NO_REPLY]].\n\n"
+        . "Use the thread context above to keep the reply varied and additive. If no new detail exists, output [[NO_REPLY]].\n"
+        . ($shouldDeepenCoreTopic
+            ? "\nFor this thread, go one level deeper into the core topic's why/mechanism and keep it concise.\n"
+            : "\n")
+        . "\n"
         . "Write a concise first reply to this topic.";
 
     $payload = array(
@@ -4994,6 +5024,43 @@ $targetMentionsSaturated = worker_target_mentions_saturated_phrase($targetRaw, $
 $latestPostNumber = isset($latestPost['post_number']) ? (int)$latestPost['post_number'] : 0;
 $targetIsBot = is_bot_user($latestUsername);
 $targetIsQuestionLike = worker_is_question_like_text($targetRaw);
+$humanRepliesAfterOp = worker_count_human_replies_after_op($posts);
+$opIsBot = is_bot_user($opUsername);
+$opCreatedAtTs = isset($opPost['created_at']) ? strtotime((string)$opPost['created_at']) : false;
+if ($opCreatedAtTs === false) {
+    $opCreatedAtTs = isset($topic['created_at']) ? strtotime((string)$topic['created_at']) : false;
+}
+$threadAgeSecondsFromOp = ($opCreatedAtTs !== false) ? max(0, time() - (int)$opCreatedAtTs) : null;
+$humanFirst24hGate = array(
+    'applies' => $opIsBot,
+    'has_human_reply_after_op' => ($humanRepliesAfterOp > 0),
+    'human_replies_after_op_count' => $humanRepliesAfterOp,
+    'thread_age_seconds_from_op' => $threadAgeSecondsFromOp,
+    'wait_window_seconds' => 24 * 3600,
+    'blocked' => false,
+);
+if (
+    $opIsBot
+    && $humanRepliesAfterOp === 0
+    && is_int($threadAgeSecondsFromOp)
+    && $threadAgeSecondsFromOp < (24 * 3600)
+) {
+    $humanFirst24hGate['blocked'] = true;
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'Waiting for human reply window before bot follow-up on bot-started thread.',
+        'topic' => array(
+            'id' => $topicId,
+            'title' => $topicTitle,
+            'url' => rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId,
+            'op_username' => $opUsername,
+            'latest_username' => $latestUsername,
+            'latest_is_bot' => $targetIsBot,
+        ),
+        'human_first_24h_gate' => $humanFirst24hGate,
+    ));
+}
 $forceContrarianReply = false;
 $allowNoReply = false;
 $chainRoll = null;
@@ -5321,6 +5388,7 @@ if (trim((string)$replyText) === '') {
                 'force_contrarian' => $forceContrarianReply,
                 'allow_no_reply' => $allowNoReply,
             ),
+            'human_first_24h_gate' => $humanFirst24hGate,
         ));
     }
 }
@@ -5490,6 +5558,7 @@ if (!empty($qualityGate['enabled']) && empty($qualityGate['passed'])) {
             'selected_bot' => $bot,
             'quality_gate' => $qualityGate,
             'new_details_gate' => $newDetailsGate,
+            'human_first_24h_gate' => $humanFirst24hGate,
             'reply_preview' => $replyText,
             'fallback_used' => $fallbackUsed,
         ));
@@ -5521,6 +5590,7 @@ if ($dryRun) {
             'force_contrarian' => $forceContrarianReply,
             'allow_no_reply' => $allowNoReply,
         ),
+        'human_first_24h_gate' => $humanFirst24hGate,
         'link_policy' => array(
             'wants_reference_link' => $wantsReferenceLink,
             'is_code_topic' => $isCodeTopic,
@@ -5628,6 +5698,7 @@ out_json(200, array(
         'force_contrarian' => $forceContrarianReply,
         'allow_no_reply' => $allowNoReply,
     ),
+    'human_first_24h_gate' => $humanFirst24hGate,
     'link_policy' => array(
         'wants_reference_link' => $wantsReferenceLink,
         'is_code_topic' => $isCodeTopic,
