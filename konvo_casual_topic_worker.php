@@ -122,11 +122,13 @@ function casual_save_recent_topics(array $items): void
         if (!is_array($item)) continue;
         $title = trim((string)($item['title'] ?? ''));
         $angle = trim((string)($item['plan_angle'] ?? ''));
+        $lane = trim((string)($item['plan_lane'] ?? ''));
         $ts = (int)($item['ts'] ?? time());
         if ($title === '') continue;
         $clean[] = array(
             'title' => $title,
             'plan_angle' => $angle,
+            'plan_lane' => $lane,
             'ts' => $ts,
         );
     }
@@ -139,12 +141,13 @@ function casual_save_recent_topics(array $items): void
     @file_put_contents(casual_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
-function casual_remember_topic(string $title, string $planAngle): void
+function casual_remember_topic(string $title, string $planAngle, string $planLane = ''): void
 {
     $items = casual_load_recent_topics();
     array_unshift($items, array(
         'title' => trim($title),
         'plan_angle' => trim($planAngle),
+        'plan_lane' => trim($planLane),
         'ts' => time(),
     ));
     casual_save_recent_topics($items);
@@ -219,14 +222,120 @@ function casual_recent_hint_lines(array $recent): string
         if (!is_array($item)) continue;
         $title = trim((string)($item['title'] ?? ''));
         $angle = trim((string)($item['plan_angle'] ?? ''));
+        $lane = trim((string)($item['plan_lane'] ?? ''));
         if ($title === '') continue;
         $line = '- ' . $title;
         if ($angle !== '') {
             $line .= ' (angle: ' . $angle . ')';
         }
+        if ($lane !== '') {
+            $line .= ' [lane: ' . $lane . ']';
+        }
         $lines[] = $line;
     }
     return $lines === array() ? '(none)' : implode("\n", $lines);
+}
+
+function casual_interest_lanes(): array
+{
+    return array(
+        'games' => array(
+            'label' => 'video games and player experience',
+            'guidance' => 'Focus on game design, player behavior, creativity, community, or AI-in-games tradeoffs. Not patch/news reposts.',
+        ),
+        'sci_fi_ai' => array(
+            'label' => 'science fiction lens on AI',
+            'guidance' => 'Use a sci-fi framing to discuss practical AI/product behavior today. Keep it grounded in real teams and products.',
+        ),
+        'business' => array(
+            'label' => 'business and market impact',
+            'guidance' => 'Focus on incentives, margins, hiring, go-to-market pressure, or organizational tradeoffs from AI/tech shifts.',
+        ),
+        'design' => array(
+            'label' => 'design and UX impact',
+            'guidance' => 'Focus on UX quality, trust, intent, agency, creativity, and design-system/product tradeoffs.',
+        ),
+        'dev_culture' => array(
+            'label' => 'developer life and craft',
+            'guidance' => 'Focus on debugging habits, code ownership, review quality, team learning, and engineering culture tradeoffs.',
+        ),
+        'product_workflow' => array(
+            'label' => 'product and workflow decisions',
+            'guidance' => 'Focus on process, collaboration, decision speed, and where automation helps or harms product outcomes.',
+        ),
+    );
+}
+
+function casual_lane_tokens(string $laneKey): array
+{
+    $map = array(
+        'games' => array('game', 'gaming', 'npc', 'player', 'gameplay', 'level', 'quest', 'rpg', 'indie'),
+        'sci_fi_ai' => array('sci-fi', 'science fiction', 'hal', 'skynet', 'agent', 'autonomy', 'future'),
+        'business' => array('business', 'market', 'pricing', 'margin', 'hiring', 'revenue', 'cost', 'roi'),
+        'design' => array('design', 'ux', 'ui', 'interface', 'usability', 'creative', 'workflow'),
+        'dev_culture' => array('developer', 'engineering', 'code review', 'debugging', 'ownership', 'team'),
+        'product_workflow' => array('product', 'process', 'workflow', 'decision', 'collaboration', 'roadmap'),
+    );
+    return $map[$laneKey] ?? array();
+}
+
+function casual_infer_lane_from_item(array $item): string
+{
+    $lane = trim((string)($item['plan_lane'] ?? ''));
+    if ($lane !== '') return $lane;
+
+    $blob = strtolower(trim((string)($item['title'] ?? '') . "\n" . (string)($item['plan_angle'] ?? '')));
+    if ($blob === '') return '';
+    foreach (array_keys(casual_interest_lanes()) as $laneKey) {
+        $tokens = casual_lane_tokens($laneKey);
+        foreach ($tokens as $tok) {
+            if ($tok !== '' && strpos($blob, strtolower($tok)) !== false) {
+                return $laneKey;
+            }
+        }
+    }
+    return '';
+}
+
+function casual_pick_interest_lane(array $recent): array
+{
+    $lanes = casual_interest_lanes();
+    $counts = array();
+    foreach (array_keys($lanes) as $k) {
+        $counts[$k] = 0;
+    }
+    $max = min(12, count($recent));
+    for ($i = 0; $i < $max; $i++) {
+        $item = $recent[$i] ?? null;
+        if (!is_array($item)) continue;
+        $lane = casual_infer_lane_from_item($item);
+        if ($lane !== '' && isset($counts[$lane])) {
+            $counts[$lane]++;
+        }
+    }
+
+    $min = null;
+    $choices = array();
+    foreach ($counts as $k => $c) {
+        if ($min === null || $c < $min) {
+            $min = $c;
+            $choices = array($k);
+        } elseif ($c === $min) {
+            $choices[] = $k;
+        }
+    }
+    if ($choices === array()) {
+        $choices = array_keys($lanes);
+    }
+    shuffle($choices);
+    $pickedKey = (string)$choices[0];
+    $picked = $lanes[$pickedKey] ?? array('label' => 'technology tradeoffs', 'guidance' => '');
+    return array(
+        'key' => $pickedKey,
+        'label' => (string)($picked['label'] ?? 'technology tradeoffs'),
+        'guidance' => (string)($picked['guidance'] ?? ''),
+        'counts' => $counts,
+    );
 }
 
 function casual_fetch_latest_topic_titles(int $max = 120): array
@@ -840,7 +949,7 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
     );
 }
 
-function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = ''): array
+function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = '', array $lane = array()): array
 {
     $botName = trim((string)($bot['name'] ?? 'BayMax'));
     $soulKey = trim((string)($bot['soul_key'] ?? strtolower($botName)));
@@ -865,11 +974,14 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
 
     $extraAvoidance = trim($extraAvoidance);
     $extraAvoidanceLine = $extraAvoidance !== '' ? ("Special avoidance instruction:\n" . $extraAvoidance . "\n\n") : '';
+    $laneLabel = trim((string)($lane['label'] ?? 'broad technology tradeoffs'));
+    $laneGuidance = trim((string)($lane['guidance'] ?? ''));
+    $laneKey = trim((string)($lane['key'] ?? 'general'));
 
     $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
         . 'You generate a single open-question forum topic starter for humans. '
         . 'Return ONLY JSON with this schema: '
-        . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","title":"...","raw":"..."}. '
+        . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
         . 'Rules: topic must be about AI, software, developer tools, web platform behavior, or technology tradeoffs in real work. '
         . 'Do not produce architecture showcase chatter, link shares, GIF posts, product launch reposts, or news summaries. '
         . 'Anchor the topic around one practical tension or tradeoff and ask for lived experience from others. '
@@ -883,7 +995,10 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording.';
 
     $user = "Generate one new AI/technology discussion question now.\n"
-        . "Desired domains: AI, technology, software workflows, web platform, digital product tradeoffs.\n"
+        . "Desired domains across runs: video games, sci-fi+AI, business impact, design impact, developer life, product/workflow tradeoffs.\n"
+        . "Primary lane for THIS run: {$laneLabel}\n"
+        . ($laneGuidance !== '' ? ("Lane guidance: {$laneGuidance}\n") : '')
+        . "Set plan_lane to exactly this key: {$laneKey}\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
         . "Recent forum topics to avoid paraphrasing:\n{$forumRecentHints}\n\n"
         . $extraAvoidanceLine
@@ -919,6 +1034,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     $planMood = trim((string)($obj['plan_mood'] ?? ''));
     $planAngle = trim((string)($obj['plan_angle'] ?? ''));
     $planIntent = trim((string)($obj['plan_posting_intent'] ?? ''));
+    $planLane = trim((string)($obj['plan_lane'] ?? $laneKey));
 
     if ($title === '' || $raw === '') {
         return array('ok' => false, 'error' => 'Model JSON missing title/raw', 'parsed' => $obj);
@@ -937,6 +1053,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
             'mood' => $planMood,
             'angle' => $planAngle,
             'posting_intent' => $planIntent,
+            'lane' => $planLane,
         ),
     );
 }
@@ -1020,6 +1137,7 @@ $signature = function_exists('konvo_signature_with_optional_emoji')
     ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'BayMax'), $signatureSeed)
     : (string)($bot['name'] ?? 'BayMax');
 $recent = casual_load_recent_topics();
+$lane = casual_pick_interest_lane($recent);
 $today = date('Y-m-d');
 if (!$dryRun && !$force && is_array($recent) && $recent !== array()) {
     $last = $recent[0] ?? null;
@@ -1049,7 +1167,7 @@ for ($i = 0; $i < 4; $i++) {
         break;
     }
     $strict = $i > 0;
-    $res = casual_generate_with_llm($bot, $signature, $recent, $recentForumTitles, $strict, $extraAvoidance);
+    $res = casual_generate_with_llm($bot, $signature, $recent, $recentForumTitles, $strict, $extraAvoidance, $lane);
     if (!empty($res['ok'])) {
         $tooSimilar = casual_title_too_similar_to_recent((string)($res['title'] ?? ''), $recentForumTitles);
         if ($tooSimilar) {
@@ -1132,6 +1250,7 @@ if ($dryRun) {
         'action' => 'would_post_casual_topic',
         'bot' => $bot,
         'plan' => $plan,
+        'lane' => $lane,
         'topic' => array(
             'title' => $title,
             'category_id' => $categoryId,
@@ -1162,7 +1281,7 @@ if (!$post['ok']) {
 $topicId = (int)($post['body']['topic_id'] ?? 0);
 $postNumber = (int)($post['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
-casual_remember_topic($title, (string)($plan['angle'] ?? ''));
+casual_remember_topic($title, (string)($plan['angle'] ?? ''), (string)($plan['lane'] ?? (string)($lane['key'] ?? '')));
 casual_consensus_register_topic($topicId, $bot, $title, $categoryId, $plan);
 
 casual_out(200, array(
@@ -1172,6 +1291,7 @@ casual_out(200, array(
     'topic_url' => $topicUrl,
     'bot' => $bot,
     'plan' => $plan,
+    'lane' => $lane,
     'topic' => array(
         'title' => $title,
         'category_id' => $categoryId,
