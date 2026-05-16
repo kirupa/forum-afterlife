@@ -3757,6 +3757,48 @@ function worker_force_genuine_question_with_llm($bot, $topicTitle, $targetRaw, $
     return trim((string)$txt);
 }
 
+function worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $targetRaw, $draft, $recentContext = '')
+{
+    if (!is_array($bot)) return '';
+    $botUsername = isset($bot['username']) ? (string)$bot['username'] : 'Bot';
+    $soulKey = isset($bot['soul_key']) ? (string)$bot['soul_key'] : strtolower((string)$botUsername);
+    $soul = konvo_compose_forum_persona_system_prompt(
+        konvo_load_soul($soulKey, 'Write naturally, concise, and human.')
+    );
+    $isTechnical = is_codey_topic((string)$topicTitle, (string)$targetRaw)
+        || (function_exists('kirupa_is_technical_text') && kirupa_is_technical_text((string)$topicTitle . "\n" . (string)$targetRaw));
+    $model = worker_model_for_task($isTechnical ? 'reply_generation_technical' : 'reply_generation', array('technical' => $isTechnical));
+    if (!is_string($model) || trim($model) === '' || KONVO_OPENAI_API_KEY === '') return '';
+
+    $system = trim((string)$soul)
+        . ' Rewrite this draft so it replies to the target post without mimicking its opening phrase.'
+        . ' Keep 1-2 short sentences, casual forum tone, and one concrete new detail.'
+        . ' Do not copy the first sentence structure or wording from the target post.'
+        . ' Never repeat a 4-word sequence from the target post.'
+        . ' No greeting, no sign-off, no bullets.';
+    $user = "Topic title: {$topicTitle}\n\nTarget post:\n{$targetRaw}\n\nRecent thread context:\n{$recentContext}\n\nCurrent draft:\n{$draft}\n\nRewrite now.";
+    $res = post_json(
+        'https://api.openai.com/v1/chat/completions',
+        array(
+            'model' => $model,
+            'messages' => array(
+                array('role' => 'system', 'content' => $system),
+                array('role' => 'user', 'content' => $user),
+            ),
+            'temperature' => 0.9,
+        ),
+        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+    );
+    if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
+    $txt = trim((string)$res['body']['choices'][0]['message']['content']);
+    if ($txt === '') return '';
+    $txt = worker_apply_micro_grammar_fixes($txt);
+    $txt = worker_markdown_code_integrity_pass($txt);
+    $txt = worker_normalize_code_fence_spacing($txt);
+    $txt = worker_strip_foreign_bot_name_noise($txt, $botUsername);
+    return trim((string)$txt);
+}
+
 function pick_candidate_topic($topics, $seenState)
 {
     $pool = array();
@@ -4577,12 +4619,12 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     );
 
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
-        return build_contextual_fallback_reply($topicTitle, $opRaw, $signature, $linkData, $shouldIncludeLink);
+        return '';
     }
 
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
     if ($txt === '') {
-        return build_contextual_fallback_reply($topicTitle, $opRaw, $signature, $linkData, $shouldIncludeLink);
+        return '';
     }
     if (!$learnerFollowupMode && $allowNoReply && preg_match('/^\s*\[\[NO_REPLY\]\]\s*$/i', $txt)) {
         return '';
@@ -4600,6 +4642,40 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     }
     if ($isSimpleClarification) {
         $txt = worker_tighten_simple_clarification_reply($txt, $signature);
+    }
+
+    $targetOpening = strtolower(trim((string)worker_extract_opening_line($opRaw)));
+    $replyOpening = strtolower(trim((string)worker_extract_opening_line($txt)));
+    $normTarget = strtolower(trim((string)preg_replace('/\s+/', ' ', (string)preg_replace('/[^a-z0-9]+/i', ' ', (string)$opRaw))));
+    $normReply = strtolower(trim((string)preg_replace('/\s+/', ' ', (string)preg_replace('/[^a-z0-9]+/i', ' ', (string)$txt))));
+    $targetTokens = worker_tokenize_for_similarity((string)$opRaw);
+    $replyTokens = worker_tokenize_for_similarity((string)$txt);
+    $targetLead = implode(' ', array_slice($targetTokens, 0, 10));
+    $replyLead = implode(' ', array_slice($replyTokens, 0, 10));
+    $prefixClone = ($normReply !== '' && strlen($normReply) >= 40 && $normTarget !== '' && strpos($normTarget, $normReply) === 0);
+    $leadClone = ($targetLead !== '' && $replyLead !== '' && $targetLead === $replyLead);
+    $looksMimic = worker_is_probable_duplicate_text($txt, $opRaw, 0.44)
+        || ($targetOpening !== '' && $replyOpening !== '' && $targetOpening === $replyOpening)
+        || $prefixClone
+        || $leadClone;
+    if ($looksMimic) {
+        $deMimic = worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $opRaw, $txt, (string)$recentThreadContext);
+        if ($deMimic !== '') {
+            $txt = $deMimic;
+            $replyOpening = strtolower(trim((string)worker_extract_opening_line($txt)));
+            $normReply = strtolower(trim((string)preg_replace('/\s+/', ' ', (string)preg_replace('/[^a-z0-9]+/i', ' ', (string)$txt))));
+            $replyTokens = worker_tokenize_for_similarity((string)$txt);
+            $replyLead = implode(' ', array_slice($replyTokens, 0, 10));
+            $prefixClone = ($normReply !== '' && strlen($normReply) >= 40 && $normTarget !== '' && strpos($normTarget, $normReply) === 0);
+            $leadClone = ($targetLead !== '' && $replyLead !== '' && $targetLead === $replyLead);
+            $looksMimic = worker_is_probable_duplicate_text($txt, $opRaw, 0.44)
+                || ($targetOpening !== '' && $replyOpening !== '' && $targetOpening === $replyOpening)
+                || $prefixClone
+                || $leadClone;
+        }
+        if ($looksMimic) {
+            return '';
+        }
     }
 
     $txt = worker_markdown_code_integrity_pass($txt);
@@ -5599,7 +5675,10 @@ $duplicateGate = $learnerFollowupModeTop
     ? array('skip' => false, 'reason' => '')
     : worker_detect_duplicate_reply($replyText, $targetRaw, $recentOtherBotPosts, $recentSameBotPosts);
 if (!empty($duplicateGate['skip']) && $forceOrphanReviveMode) {
-    $duplicateGate = array('skip' => false, 'reason' => 'forced_orphan_revive_mode');
+    $dupReason = (string)($duplicateGate['reason'] ?? '');
+    if ($dupReason !== 'duplicate_of_target_post') {
+        $duplicateGate = array('skip' => false, 'reason' => 'forced_orphan_revive_mode');
+    }
 }
 if (!empty($duplicateGate['skip'])) {
     if (!$fallbackUsed) {
