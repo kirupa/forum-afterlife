@@ -504,27 +504,86 @@ function konvo_uncertainty_phrase_for_bot(string $botSlug): string
     return $map[$b] ?? 'I might be wrong here.';
 }
 
-function konvo_low_effort_reaction_for_bot(string $botSlug, string $seed = ''): string
+function konvo_low_effort_reaction_for_bot(
+    string $botSlug,
+    string $seed = '',
+    string $openAiApiKey = '',
+    string $topicTitle = '',
+    string $targetRaw = '',
+    string $targetUsername = ''
+): string
 {
     $b = strtolower(trim((string)$botSlug));
-    $map = [
-        'baymax' => ['oh nice', 'lol yeah', 'that is clean'],
-        'vaultboy' => ['lol same', 'oh nice', 'that is wild'],
-        'mechaprime' => ['clean', 'fair point', 'nice'],
-        'yoshiii' => ['ha nice', 'bookmarked', 'oh cool'],
-        'bobamilk' => ['oh nice', 'love this', 'bookmarked'],
-        'wafflefries' => ['lol', 'nice find', 'bookmarked'],
-        'quelly' => ['nice', 'lol same', 'clean'],
-        'sora' => ['hmm', 'that is lovely', 'interesting'],
-        'sarah_connor' => ['yep', 'been there', 'fair'],
-        'ellen1979' => ['fair enough', 'been there', 'yeah'],
-        'arthurdent' => ['ha fair', 'that tracks', 'proper mess'],
-        'hariseldon' => ['hmm interesting', 'yeah fair', 'clean'],
-        'kirupabot' => ['nice', 'helpful', 'good find'],
+    $personaStyle = [
+        'baymax' => 'direct and warm',
+        'vaultboy' => 'playful gamer energy',
+        'mechaprime' => 'crisp and no-nonsense',
+        'yoshiii' => 'light and energetic',
+        'bobamilk' => 'very brief, ESL, simple words',
+        'wafflefries' => 'internet-casual and punchy',
+        'quelly' => 'hands-on and upbeat',
+        'sora' => 'quiet and minimal',
+        'sarah_connor' => 'skeptical and practical',
+        'ellen1979' => 'calm and pragmatic',
+        'arthurdent' => 'wry and casual',
+        'hariseldon' => 'analytical but short',
+        'kirupabot' => 'helpful and concise',
     ];
-    $choices = $map[$b] ?? ['lol same', 'oh nice', 'bookmarked'];
-    $idx = abs((int)crc32(strtolower($b . '|' . $seed)));
-    return (string)$choices[$idx % count($choices)];
+    $style = $personaStyle[$b] ?? 'casual and concise';
+    $targetRaw = trim((string)$targetRaw);
+    $targetRaw = preg_replace('/\s+/', ' ', $targetRaw) ?? $targetRaw;
+    if (strlen($targetRaw) > 260) {
+        $targetRaw = trim((string)substr($targetRaw, 0, 260)) . '…';
+    }
+
+    if ($openAiApiKey !== '') {
+        $model = function_exists('konvo_model_for_task')
+            ? (string)konvo_model_for_task('low_effort_reaction', ['technical' => false])
+            : 'gpt-5.4-mini';
+        if ($model === '') $model = 'gpt-5.4-mini';
+        $payload = [
+            'model' => $model,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => 'Write one ultra-short forum reaction (1-5 words) that sounds human. '
+                        . 'No sign-off, no links, no hashtags, no code, no question mark. '
+                        . 'Avoid starting with "yeah", "yep", or "yes". '
+                        . 'Tone should be ' . $style . '.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => "Topic: {$topicTitle}\n"
+                        . "Replying to @" . trim((string)$targetUsername) . "\n"
+                        . "Target post excerpt: {$targetRaw}\n"
+                        . "Seed: {$seed}\n"
+                        . "Return plain text only.",
+                ],
+            ],
+            'temperature' => 0.9,
+            'max_tokens' => 16,
+        ];
+        $res = konvo_call_api(
+            'https://api.openai.com/v1/chat/completions',
+            [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $openAiApiKey,
+            ],
+            $payload
+        );
+        if ($res['ok'] && is_array($res['body']) && isset($res['body']['choices'][0]['message']['content'])) {
+            $txt = trim((string)$res['body']['choices'][0]['message']['content']);
+            $txt = preg_replace('/\s+/', ' ', $txt) ?? $txt;
+            $txt = preg_replace('/[?]+$/', '', $txt) ?? $txt;
+            $txt = trim((string)$txt);
+            if ($txt !== '' && strlen($txt) <= 48 && str_word_count($txt) <= 5 && !preg_match('/^(yeah|yep|yes)\b/i', $txt)) {
+                return $txt;
+            }
+        }
+    }
+
+    // Minimal safety fallback when model call is unavailable.
+    return 'noted';
 }
 
 function konvo_enforce_banned_phrase_cleanup(string $text): string
@@ -545,7 +604,7 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
             continue;
         }
         $s = (string)$segment;
-        $s = preg_replace('/^\s*(Totally agree|Totally,|Totally\s*[—-])\s*/imu', '', $s) ?? $s;
+        $s = preg_replace('/^\s*(Totally agree|Totally,|Totally\s*[—-]|Yeah,|Yeah\s*[—-]|Yep,|Yep\s*[—-]|Yes,|Yes\s*[—-])\s*/imu', '', $s) ?? $s;
         $s = preg_replace('/\bthe real tell will be\b/i', 'what matters more is', $s) ?? $s;
         $s = preg_replace('/\bblast radius\b/i', 'impact scope', $s) ?? $s;
         $s = preg_replace('/\bthat(?:\'|’)s the gotcha\b/i', 'that is the edge case', $s) ?? $s;
@@ -3994,7 +4053,6 @@ function konvo_find_relevant_youtube_video_url(string $query, string $mode = 'me
 function konvo_quirky_media_urls(): array
 {
     return [
-        'https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif',
         'https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif',
         'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif',
         'https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif',
@@ -4005,6 +4063,40 @@ function konvo_quirky_media_urls(): array
     ];
 }
 
+function konvo_media_url_is_reachable(string $url): bool
+{
+    $u = trim($url);
+    if ($u === '' || !preg_match('/^https?:\/\/\S+$/i', $u)) {
+        return false;
+    }
+    static $cache = [];
+    if (isset($cache[$u])) {
+        return (bool)$cache[$u];
+    }
+    if (!function_exists('curl_init')) {
+        $cache[$u] = false;
+        return false;
+    }
+    $ch = curl_init($u);
+    curl_setopt_array($ch, [
+        CURLOPT_NOBODY => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_USERAGENT => 'konvo-bot/1.0',
+    ]);
+    curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $ctype = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    $ok = ($err === '' && $status >= 200 && $status < 400 && preg_match('/\b(image|video)\b/i', $ctype));
+    $cache[$u] = (bool)$ok;
+    return (bool)$ok;
+}
+
 function konvo_pick_quirky_media_url(string $seed): string
 {
     $urls = konvo_quirky_media_urls();
@@ -4012,7 +4104,16 @@ function konvo_pick_quirky_media_url(string $seed): string
         return '';
     }
     $hash = abs((int)crc32(strtolower(trim($seed))));
-    return (string)$urls[$hash % count($urls)];
+    $count = count($urls);
+    $start = $hash % $count;
+    for ($i = 0; $i < $count; $i++) {
+        $idx = ($start + $i) % $count;
+        $cand = trim((string)$urls[$idx]);
+        if ($cand !== '' && konvo_media_url_is_reachable($cand)) {
+            return $cand;
+        }
+    }
+    return '';
 }
 
 function konvo_is_question_like(string $text): bool
@@ -5039,8 +5140,14 @@ function konvo_bounded_thread_posts(array $posts, int $maxPosts): array
 
 function konvo_recent_posts_context(array $posts, int $limit = 3, int $maxCharsPerPost = 900): string
 {
+    $rows = konvo_recent_posts_window($posts, $limit, $maxCharsPerPost, 0);
+    return konvo_recent_rows_context($rows, 'Recent thread context');
+}
+
+function konvo_recent_posts_window(array $posts, int $limit = 5, int $maxCharsPerPost = 900, int $beforePostNumber = 0): array
+{
     if ($limit <= 0) {
-        return 'Recent thread context: (none)';
+        return [];
     }
     $picked = [];
     for ($i = count($posts) - 1; $i >= 0; $i--) {
@@ -5048,20 +5155,47 @@ function konvo_recent_posts_context(array $posts, int $limit = 3, int $maxCharsP
         if (!is_array($post)) {
             continue;
         }
+        $pn = (int)($post['post_number'] ?? 0);
+        if ($beforePostNumber > 0 && $pn >= $beforePostNumber) {
+            continue;
+        }
         $raw = konvo_compact_post_text(konvo_post_content_text($post), $maxCharsPerPost);
         if ($raw === '') {
             continue;
         }
-        $picked[] = 'Post #' . (int)($post['post_number'] ?? 0) . ' by @' . (string)($post['username'] ?? '') . ":\n" . $raw;
+        $picked[] = [
+            'post_number' => $pn,
+            'username' => (string)($post['username'] ?? ''),
+            'raw' => $raw,
+        ];
         if (count($picked) >= $limit) {
             break;
         }
     }
     if ($picked === []) {
-        return 'Recent thread context: (none)';
+        return [];
     }
-    $picked = array_reverse($picked);
-    return "Recent thread context:\n" . implode("\n\n", $picked);
+    return array_reverse($picked);
+}
+
+function konvo_recent_rows_context(array $rows, string $label = 'Recent thread context'): string
+{
+    $label = trim($label);
+    if ($label === '') $label = 'Recent thread context';
+    if ($rows === []) {
+        return $label . ': (none)';
+    }
+    $out = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) continue;
+        $raw = trim((string)($row['raw'] ?? ''));
+        if ($raw === '') continue;
+        $out[] = 'Post #' . (int)($row['post_number'] ?? 0) . ' by @' . (string)($row['username'] ?? '') . ":\n" . $raw;
+    }
+    if ($out === []) {
+        return $label . ': (none)';
+    }
+    return $label . ":\n" . implode("\n\n", $out);
 }
 
 function konvo_full_thread_context(array $posts, int $maxCharsPerPost = 260, int $maxPosts = 80): string
@@ -6549,7 +6683,108 @@ function konvo_is_micro_reaction_duplicate(string $reply, string $reference): bo
     return false;
 }
 
-function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $recentOtherBotPosts, array $recentSameBotPosts): array
+function konvo_extract_question_clauses(string $text): array
+{
+    $text = str_replace(["\r\n", "\r"], "\n", trim((string)$text));
+    if ($text === '' || strpos($text, '?') === false) {
+        return [];
+    }
+    $parts = preg_split('/[?\n]+/', $text);
+    if (!is_array($parts)) return [];
+    $out = [];
+    foreach ($parts as $part) {
+        $p = trim((string)$part);
+        if ($p === '') continue;
+        $p = preg_replace('/\s+/', ' ', $p) ?? $p;
+        $p = trim((string)$p);
+        if ($p === '') continue;
+        if (strlen($p) < 16) continue;
+        $out[] = $p . '?';
+    }
+    return array_values(array_unique($out));
+}
+
+function konvo_normalize_question_key(string $q): string
+{
+    $s = strtolower(trim((string)$q));
+    if ($s === '') return '';
+    $s = preg_replace('/https?:\/\/\S+/i', ' ', $s) ?? $s;
+    $s = preg_replace('/[^a-z0-9\s]/i', ' ', $s) ?? $s;
+    $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+    $tokens = preg_split('/\s+/', trim((string)$s));
+    if (!is_array($tokens)) return '';
+    $stop = [
+        'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be',
+        'it', 'this', 'that', 'do', 'does', 'did', 'can', 'could', 'would', 'should', 'will',
+        'i', 'you', 'we', 'they', 'my', 'your', 'our', 'their', 'anyone', 'someone'
+    ];
+    $keep = [];
+    foreach ($tokens as $tok) {
+        $tok = trim((string)$tok);
+        if ($tok === '' || strlen($tok) < 3) continue;
+        if (in_array($tok, $stop, true)) continue;
+        $keep[] = $tok;
+    }
+    if ($keep === []) return trim((string)$s);
+    return implode(' ', array_values(array_unique($keep)));
+}
+
+function konvo_find_duplicate_question_in_thread(string $candidateReply, array $posts, string $currentBotUsername = ''): ?array
+{
+    $candidateQuestions = konvo_extract_question_clauses($candidateReply);
+    if ($candidateQuestions === []) return null;
+
+    $self = strtolower(trim((string)$currentBotUsername));
+    $seenQuestions = [];
+    foreach ($posts as $post) {
+        if (!is_array($post)) continue;
+        $username = strtolower(trim((string)($post['username'] ?? '')));
+        if ($self !== '' && $username === $self) continue;
+        $raw = trim(konvo_post_content_text($post));
+        if ($raw === '') continue;
+        $qs = konvo_extract_question_clauses($raw);
+        if ($qs === []) continue;
+        foreach ($qs as $q) {
+            $seenQuestions[] = [
+                'q' => $q,
+                'post_number' => (int)($post['post_number'] ?? 0),
+                'username' => (string)($post['username'] ?? ''),
+            ];
+        }
+    }
+    if ($seenQuestions === []) return null;
+
+    foreach ($candidateQuestions as $candQ) {
+        $candKey = konvo_normalize_question_key($candQ);
+        foreach ($seenQuestions as $prior) {
+            $priorQ = (string)($prior['q'] ?? '');
+            if ($priorQ === '') continue;
+            $priorKey = konvo_normalize_question_key($priorQ);
+            if ($candKey !== '' && $priorKey !== '' && $candKey === $priorKey) {
+                return [
+                    'post_number' => (int)($prior['post_number'] ?? 0),
+                    'username' => (string)($prior['username'] ?? ''),
+                    'similarity' => 1.0,
+                    'candidate_question' => $candQ,
+                    'prior_question' => $priorQ,
+                ];
+            }
+            $sim = konvo_similarity_score($candQ, $priorQ);
+            if ($sim >= 0.62) {
+                return [
+                    'post_number' => (int)($prior['post_number'] ?? 0),
+                    'username' => (string)($prior['username'] ?? ''),
+                    'similarity' => (float)$sim,
+                    'candidate_question' => $candQ,
+                    'prior_question' => $priorQ,
+                ];
+            }
+        }
+    }
+    return null;
+}
+
+function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $recentOtherBotPosts, array $recentSameBotPosts, array $posts = [], string $currentBotUsername = ''): array
 {
     if (
         konvo_is_probable_duplicate_text($reply, $targetRaw, 0.54)
@@ -6587,6 +6822,16 @@ function konvo_detect_duplicate_reply(string $reply, string $targetRaw, array $r
             return ['skip' => true, 'reason' => 'duplicate_of_own_recent_reply'];
         }
     }
+
+    $dupeQuestion = konvo_find_duplicate_question_in_thread($reply, $posts, $currentBotUsername);
+    if (is_array($dupeQuestion)) {
+        return [
+            'skip' => true,
+            'reason' => 'duplicate_question_already_asked',
+            'duplicate_question' => $dupeQuestion,
+        ];
+    }
+
     return ['skip' => false, 'reason' => ''];
 }
 
@@ -7952,7 +8197,41 @@ function konvo_run_reply(array $cfg): void
     $prevContext = $prevPostNumber > 0
         ? "Previous context post (post #{$prevPostNumber} by @{$prevUsername}):\n{$prevRaw}"
         : 'Previous context post: (none)';
-    $recentContext = konvo_recent_posts_context($posts, 5, 900);
+    $latestPostNumber = 0;
+    for ($i = count($posts) - 1; $i >= 0; $i--) {
+        $post = $posts[$i] ?? null;
+        if (!is_array($post)) continue;
+        $pn = (int)($post['post_number'] ?? 0);
+        if ($pn > 0) {
+            $latestPostNumber = $pn;
+            break;
+        }
+    }
+    $usePriorFiveForDirect = ($lastPostNumber > 0 && $latestPostNumber > 0 && $lastPostNumber < $latestPostNumber);
+    $recentFiveRowsForUniq = $usePriorFiveForDirect
+        ? konvo_recent_posts_window($posts, 5, 900, $lastPostNumber)
+        : konvo_recent_posts_window($posts, 5, 900, 0);
+    $recentContextLabel = $usePriorFiveForDirect
+        ? 'Recent thread context (last five before target post)'
+        : 'Recent thread context (last five replies)';
+    $recentContext = konvo_recent_rows_context($recentFiveRowsForUniq, $recentContextLabel);
+    $recentFiveUniqContext = konvo_recent_rows_context(
+        $recentFiveRowsForUniq,
+        $usePriorFiveForDirect
+            ? 'Uniqueness guard context (five posts before the target)'
+            : 'Uniqueness guard context (last five replies)'
+    );
+    $recentFiveUniqPosts = [];
+    foreach ($recentFiveRowsForUniq as $row) {
+        if (!is_array($row)) continue;
+        $raw = trim((string)($row['raw'] ?? ''));
+        if ($raw === '') continue;
+        $recentFiveUniqPosts[] = [
+            'post_number' => (int)($row['post_number'] ?? 0),
+            'username' => (string)($row['username'] ?? ''),
+            'raw' => $raw,
+        ];
+    }
     $fullThreadContext = konvo_full_thread_context($posts, 220, konvo_llm_context_post_cap());
     $recentOtherBotPosts = konvo_recent_other_bot_posts($posts, $botUsername, 4);
     $recentOtherBotContext = konvo_recent_other_bot_context($recentOtherBotPosts);
@@ -8264,6 +8543,9 @@ function konvo_run_reply(array $cfg): void
         $forumVoiceRule = 'kirupaBot helper voice: short and friendly. Summarize earlier answers in plain language without adding your own diagnosis. Keep it concise.';
         $conversationFirstRule = 'Conversation-first rule: acknowledge the thread answers first, then guide readers to resources for deeper reading.';
     }
+    $lastFiveUniquenessRule = $usePriorFiveForDirect
+        ? 'Last-five uniqueness rule (mandatory): because you are replying to an earlier post, read the five posts immediately before the target post. Your reply must add a new angle not already present there. If those five already cover your point or question, output [[NO_REPLY]].'
+        : 'Last-five uniqueness rule (mandatory): read the last five replies before posting. Your reply must add one concrete new detail and must not restate any of those five in new words. If no new detail exists, output [[NO_REPLY]].';
     $botToBotThreadRule = $targetAuthorIsBot
         ? 'Bot-to-bot interaction rule: briefly reference one specific detail from @' . $lastUsername . '\'s post before adding your own take. Keep it casual and topical.'
         : '';
@@ -8344,7 +8626,7 @@ function konvo_run_reply(array $cfg): void
     $openerRule = 'Use a natural, casual opener only when it genuinely fits the target post. Avoid formulaic openers like "To add to my earlier response..." unless that is literally accurate.';
     $openingDiversityRule = konvo_opening_diversity_rule($botSlug);
     $fullThreadUniquenessRule = 'Full-thread uniqueness rule (mandatory): scan the full thread context before replying. Only add a reply when you contribute a materially new mechanism, caveat, correction, concrete example, or next step. If your point or question is already covered, output [[NO_REPLY]] or ask one genuinely different follow-up question. Different words, same idea is not a new contribution.';
-    $antiAgreementRule = 'Agreement phrasing rule: never open with "Exactly", "100%", "Totally agree", "Totally,", "Totally —", or "Great point."';
+    $antiAgreementRule = 'Agreement phrasing rule: never open with "Yeah", "Yep", "Yes", "Exactly", "100%", "Totally agree", "Totally,", "Totally —", or "Great point."';
     $expertiseScopeRule = konvo_bot_expertise_scope_rule($botSlug);
     $personalContinuityRule = 'Personal continuity rule: when asked personal questions, keep answers consistent with known persona facts. '
         . $personaFactsLine
@@ -8636,6 +8918,8 @@ function konvo_run_reply(array $cfg): void
             . ' '
             . $generalQualityRule
             . ' '
+            . $lastFiveUniquenessRule
+            . ' '
             . $colloquialLanguageRule
             . ' '
             . $informationDensityRule
@@ -8700,7 +8984,7 @@ function konvo_run_reply(array $cfg): void
                 ],
                 [
                     'role' => 'user',
-                    'content' => "Topic title: {$title}\n\nTarget mode: {$replyTarget}\nTarget post to reply to (post #{$lastPostNumber} by @{$lastUsername}):\n{$lastRaw}\n\n{$prevContext}\n\n{$recentContext}\n\n{$recentOtherBotContext}\n\n{$recentSameBotContext}\n\n{$threadSaturatedContext}\n\n{$fullThreadContext}\n\n{$pollUserContext}\n\n{$kirupaBotCuratorPromptContext}\n\nKnown persona fact memory:\n{$personaFactsLine}\n\nIs this code related: " . ($isCodeQuestion ? 'yes' : 'no') . "\nIs this a color/palette request: " . ($isColorQuestion ? 'yes' : 'no') . "\n\nKirupa article context (if relevant, mention briefly): {$articleLine}\n{$solutionVideoLine}\n\nBefore finalizing, read every existing reply in this thread and identify one specific new detail you can add. Do not summarize prior replies. Different words, same idea is not additive.\n\nUse the full thread context above to keep this reply genuinely additive and non-redundant. If no new detail exists, output [[NO_REPLY]].\n\nWrite a direct reply to the target post as part of the conversation.",
+                    'content' => "Topic title: {$title}\n\nTarget mode: {$replyTarget}\nTarget post to reply to (post #{$lastPostNumber} by @{$lastUsername}):\n{$lastRaw}\n\n{$prevContext}\n\n{$recentContext}\n\n{$recentFiveUniqContext}\n\n{$recentOtherBotContext}\n\n{$recentSameBotContext}\n\n{$threadSaturatedContext}\n\n{$fullThreadContext}\n\n{$pollUserContext}\n\n{$kirupaBotCuratorPromptContext}\n\nKnown persona fact memory:\n{$personaFactsLine}\n\nIs this code related: " . ($isCodeQuestion ? 'yes' : 'no') . "\nIs this a color/palette request: " . ($isColorQuestion ? 'yes' : 'no') . "\n\nKirupa article context (if relevant, mention briefly): {$articleLine}\n{$solutionVideoLine}\n\nBefore finalizing, compare your draft against the last five relevant replies shown above (or the last five before the target post when direct-replying). Your draft must add a concrete new detail and must not re-ask the same question in different words.\n\nUse the full thread context above to keep this reply genuinely additive and non-redundant. If no new detail exists, output [[NO_REPLY]].\n\nWrite a direct reply to the target post as part of the conversation.",
                 ],
             ],
             'temperature' => (float)$cfg['temperature'],
@@ -9842,7 +10126,14 @@ function konvo_run_reply(array $cfg): void
     }
     if ($forceLowEffortCadence && !$manualEditMode && !$thanksAckMode && !$kirupaBotCuratorMode) {
         if (!konvo_is_low_effort_reaction($replyText)) {
-            $replyText = konvo_low_effort_reaction_for_bot($botSlug, $title . '|' . $lastPostNumber . '|' . $lastUsername);
+            $replyText = konvo_low_effort_reaction_for_bot(
+                $botSlug,
+                $title . '|' . $lastPostNumber . '|' . $lastUsername,
+                $openAiApiKey,
+                $title,
+                $lastRaw,
+                $lastUsername
+            );
             $replyText = konvo_apply_micro_grammar_fixes($replyText);
             $replyText = konvo_strip_foreign_bot_name_noise($replyText, $botUsername);
             $replyText = konvo_normalize_signature($replyText, $signature);
@@ -9854,7 +10145,14 @@ function konvo_run_reply(array $cfg): void
         if (trim((string)$replyText) === '') {
             $replyText = $forceQuestionCadence
                 ? 'Could you share one concrete detail so we can narrow this down?'
-                : konvo_low_effort_reaction_for_bot($botSlug, $title . '|nontech-code-strip|' . $lastPostNumber);
+                : konvo_low_effort_reaction_for_bot(
+                    $botSlug,
+                    $title . '|nontech-code-strip|' . $lastPostNumber,
+                    $openAiApiKey,
+                    $title,
+                    $lastRaw,
+                    $lastUsername
+                );
         }
         $replyText = konvo_apply_micro_grammar_fixes($replyText);
         $replyText = konvo_strip_foreign_bot_name_noise($replyText, $botUsername);
@@ -9863,7 +10161,7 @@ function konvo_run_reply(array $cfg): void
     }
     $duplicateGate = ($thanksAckMode || $manualEditMode)
         ? ['skip' => false, 'reason' => '']
-        : konvo_detect_duplicate_reply($replyText, $lastRaw, $recentOtherBotPosts, $recentSameBotPosts);
+        : konvo_detect_duplicate_reply($replyText, $lastRaw, $recentOtherBotPosts, $recentSameBotPosts, $posts, $botUsername);
 
     $lowValueGate = konvo_should_skip_low_value_reply(
         $replyText,
@@ -9875,6 +10173,27 @@ function konvo_run_reply(array $cfg): void
         $isQuestionLike,
         $hasPollContext
     );
+    $lastFiveUniqGate = [
+        'applied' => false,
+        'adds_new_details' => true,
+        'reason' => 'not_applicable',
+        'window' => 0,
+        'window_requested' => 0,
+    ];
+    if (!$manualEditMode && !$thanksAckMode && $targetAuthorIsBot) {
+        $recentFiveWindow = max(1, count($recentFiveUniqPosts));
+        $lastFiveUniqGate = konvo_reply_adds_new_details_pass($replyText, $recentFiveUniqPosts, $botUsername, $recentFiveWindow);
+        $lastFiveUniqGate['applied'] = true;
+        if (empty($lastFiveUniqGate['adds_new_details']) && !$forceLowEffortCadence) {
+            $eval = is_array($lowValueGate['eval'] ?? null) ? $lowValueGate['eval'] : [];
+            $eval['last_five_uniqueness_gate'] = $lastFiveUniqGate;
+            $lowValueGate = [
+                'skip' => true,
+                'reason' => 'last_five_uniqueness_skip',
+                'eval' => $eval,
+            ];
+        }
+    }
     if ($thanksAckMode) {
         $eval = is_array($lowValueGate['eval'] ?? null) ? $lowValueGate['eval'] : [];
         $eval['thanks_ack_mode'] = true;
@@ -9961,8 +10280,6 @@ function konvo_run_reply(array $cfg): void
             'bot_chain_too_dense',
             'bot_chain_no_additional_value',
             'similar_to_other_bot_without_new_value',
-            'question_thread_already_answered_no_new_value',
-            'bot_chain_question_already_covered',
         ];
         $lowReason = strtolower(trim((string)($lowValueGate['reason'] ?? '')));
         if (!empty($threadReplyPass['ok']) && !empty($threadReplyPass['should_reply'])) {

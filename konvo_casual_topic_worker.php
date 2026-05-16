@@ -33,6 +33,8 @@ if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.c
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
 if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
+if (!defined('KONVO_ALLOW_CASUAL_TOPIC_POSTS')) define('KONVO_ALLOW_CASUAL_TOPIC_POSTS', trim((string)getenv('KONVO_ALLOW_CASUAL_TOPIC_POSTS')));
+if (!defined('KONVO_CASUAL_DAY_TZ')) define('KONVO_CASUAL_DAY_TZ', trim((string)getenv('KONVO_CASUAL_DAY_TZ')) !== '' ? trim((string)getenv('KONVO_CASUAL_DAY_TZ')) : 'America/Los_Angeles');
 if (!defined('KONVO_TALK_CATEGORY_ID')) define('KONVO_TALK_CATEGORY_ID', 34);
 if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42);
 if (!defined('KONVO_GAMING_CATEGORY_ID')) define('KONVO_GAMING_CATEGORY_ID', 115);
@@ -104,6 +106,75 @@ function casual_state_path(): string
     return $dir . '/casual_topic_recent.json';
 }
 
+function casual_daily_counts_path(): string
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir . '/casual_topic_daily_counts.json';
+}
+
+function casual_daily_counts_load(): array
+{
+    $path = casual_daily_counts_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) return array();
+    $clean = array();
+    foreach ($decoded as $day => $count) {
+        $d = trim((string)$day);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+        $clean[$d] = max(0, (int)$count);
+    }
+    ksort($clean);
+    return $clean;
+}
+
+function casual_daily_counts_save(array $state): void
+{
+    $today = casual_today_key();
+    $cutoffTs = strtotime($today . ' 00:00:00 UTC');
+    $minTs = ($cutoffTs === false ? time() : $cutoffTs) - (45 * 24 * 3600);
+    $clean = array();
+    foreach ($state as $day => $count) {
+        $d = trim((string)$day);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+        $ts = strtotime($d . ' 00:00:00 UTC');
+        if ($ts === false || $ts < $minTs) continue;
+        $clean[$d] = max(0, (int)$count);
+    }
+    ksort($clean);
+    @file_put_contents(casual_daily_counts_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function casual_today_key(): string
+{
+    try {
+        $tz = new DateTimeZone((string)KONVO_CASUAL_DAY_TZ);
+    } catch (\Throwable $e) {
+        $tz = new DateTimeZone('America/Los_Angeles');
+    }
+    $now = new DateTimeImmutable('now', $tz);
+    return $now->format('Y-m-d');
+}
+
+function casual_daily_count_for(string $day): int
+{
+    $state = casual_daily_counts_load();
+    return max(0, (int)($state[$day] ?? 0));
+}
+
+function casual_daily_count_increment(string $day): int
+{
+    $state = casual_daily_counts_load();
+    $state[$day] = max(0, (int)($state[$day] ?? 0)) + 1;
+    casual_daily_counts_save($state);
+    return (int)$state[$day];
+}
+
 function casual_load_recent_topics(): array
 {
     $path = casual_state_path();
@@ -121,11 +192,13 @@ function casual_save_recent_topics(array $items): void
         if (!is_array($item)) continue;
         $title = trim((string)($item['title'] ?? ''));
         $angle = trim((string)($item['plan_angle'] ?? ''));
+        $lane = trim((string)($item['plan_lane'] ?? ''));
         $ts = (int)($item['ts'] ?? time());
         if ($title === '') continue;
         $clean[] = array(
             'title' => $title,
             'plan_angle' => $angle,
+            'plan_lane' => $lane,
             'ts' => $ts,
         );
     }
@@ -138,15 +211,76 @@ function casual_save_recent_topics(array $items): void
     @file_put_contents(casual_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
-function casual_remember_topic(string $title, string $planAngle): void
+function casual_remember_topic(string $title, string $planAngle, string $planLane = ''): void
 {
     $items = casual_load_recent_topics();
     array_unshift($items, array(
         'title' => trim($title),
         'plan_angle' => trim($planAngle),
+        'plan_lane' => trim($planLane),
         'ts' => time(),
     ));
     casual_save_recent_topics($items);
+}
+
+function casual_consensus_state_path(): string
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir . '/casual_consensus_state.json';
+}
+
+function casual_consensus_load(): array
+{
+    $path = casual_consensus_state_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function casual_consensus_save(array $state): void
+{
+    $clean = array();
+    $now = time();
+    foreach ($state as $k => $row) {
+        $id = (string)$k;
+        if (!preg_match('/^\d+$/', $id)) continue;
+        if (!is_array($row)) continue;
+        $createdTs = isset($row['created_ts']) ? (int)$row['created_ts'] : $now;
+        if (($now - $createdTs) > (14 * 24 * 3600)) continue;
+        $clean[$id] = $row;
+    }
+    @file_put_contents(casual_consensus_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function casual_consensus_register_topic(int $topicId, array $bot, string $title, int $categoryId, array $plan): void
+{
+    if ($topicId <= 0) return;
+    $state = casual_consensus_load();
+    $key = (string)$topicId;
+    $now = time();
+    $state[$key] = array(
+        'topic_id' => $topicId,
+        'title' => trim($title),
+        'category_id' => $categoryId,
+        'op_bot' => strtolower(trim((string)($bot['username'] ?? ''))),
+        'op_signature' => trim((string)($bot['name'] ?? '')),
+        'phase' => 'open',
+        'created_ts' => $now,
+        'updated_ts' => $now,
+        'discussion_reply_count' => 0,
+        'participant_bots' => array(),
+        'consensus_posted' => false,
+        'consensus_post_id' => 0,
+        'plan_mood' => trim((string)($plan['mood'] ?? '')),
+        'plan_angle' => trim((string)($plan['angle'] ?? '')),
+        'plan_intent' => trim((string)($plan['posting_intent'] ?? '')),
+    );
+    casual_consensus_save($state);
 }
 
 function casual_recent_hint_lines(array $recent): string
@@ -158,14 +292,295 @@ function casual_recent_hint_lines(array $recent): string
         if (!is_array($item)) continue;
         $title = trim((string)($item['title'] ?? ''));
         $angle = trim((string)($item['plan_angle'] ?? ''));
+        $lane = trim((string)($item['plan_lane'] ?? ''));
         if ($title === '') continue;
         $line = '- ' . $title;
         if ($angle !== '') {
             $line .= ' (angle: ' . $angle . ')';
         }
+        if ($lane !== '') {
+            $line .= ' [lane: ' . $lane . ']';
+        }
         $lines[] = $line;
     }
     return $lines === array() ? '(none)' : implode("\n", $lines);
+}
+
+function casual_interest_lanes(): array
+{
+    return array(
+        'games' => array(
+            'label' => 'video games and player experience',
+            'guidance' => 'Focus on game design, player behavior, creativity, community, mechanics, balance, or discovery. Not patch/news reposts.',
+        ),
+        'sci_fi_ai' => array(
+            'label' => 'science fiction lens on AI',
+            'guidance' => 'Use a sci-fi framing to discuss practical AI/product behavior today. Keep it grounded in real teams and products.',
+        ),
+        'business' => array(
+            'label' => 'business and market impact',
+            'guidance' => 'Focus on incentives, margins, hiring, go-to-market pressure, or organizational tradeoffs from AI/tech shifts.',
+        ),
+        'design' => array(
+            'label' => 'design and UX impact',
+            'guidance' => 'Focus on UX quality, trust, intent, agency, creativity, and design-system/product tradeoffs.',
+        ),
+        'dev_culture' => array(
+            'label' => 'developer life and craft',
+            'guidance' => 'Focus on debugging habits, code ownership, review quality, team learning, and engineering culture tradeoffs.',
+        ),
+        'product_workflow' => array(
+            'label' => 'product and workflow decisions',
+            'guidance' => 'Focus on process, collaboration, decision speed, and where automation helps or harms product outcomes.',
+        ),
+    );
+}
+
+function casual_lane_tokens(string $laneKey): array
+{
+    $map = array(
+        'games' => array('game', 'gaming', 'npc', 'player', 'gameplay', 'level', 'quest', 'rpg', 'indie'),
+        'sci_fi_ai' => array('sci-fi', 'science fiction', 'hal', 'skynet', 'agent', 'autonomy', 'future'),
+        'business' => array('business', 'market', 'pricing', 'margin', 'hiring', 'revenue', 'cost', 'roi'),
+        'design' => array('design', 'ux', 'ui', 'interface', 'usability', 'creative', 'workflow'),
+        'dev_culture' => array('developer', 'engineering', 'code review', 'debugging', 'ownership', 'team'),
+        'product_workflow' => array('product', 'process', 'workflow', 'decision', 'collaboration', 'roadmap'),
+    );
+    return $map[$laneKey] ?? array();
+}
+
+function casual_infer_lane_from_item(array $item): string
+{
+    $lane = trim((string)($item['plan_lane'] ?? ''));
+    if ($lane !== '') return $lane;
+
+    $blob = strtolower(trim((string)($item['title'] ?? '') . "\n" . (string)($item['plan_angle'] ?? '')));
+    if ($blob === '') return '';
+    foreach (array_keys(casual_interest_lanes()) as $laneKey) {
+        $tokens = casual_lane_tokens($laneKey);
+        foreach ($tokens as $tok) {
+            if ($tok !== '' && strpos($blob, strtolower($tok)) !== false) {
+                return $laneKey;
+            }
+        }
+    }
+    return '';
+}
+
+function casual_pick_interest_lane(array $recent): array
+{
+    $lanes = casual_interest_lanes();
+    $counts = array();
+    foreach (array_keys($lanes) as $k) {
+        $counts[$k] = 0;
+    }
+    $max = min(12, count($recent));
+    for ($i = 0; $i < $max; $i++) {
+        $item = $recent[$i] ?? null;
+        if (!is_array($item)) continue;
+        $lane = casual_infer_lane_from_item($item);
+        if ($lane !== '' && isset($counts[$lane])) {
+            $counts[$lane]++;
+        }
+    }
+
+    $min = null;
+    $choices = array();
+    foreach ($counts as $k => $c) {
+        if ($min === null || $c < $min) {
+            $min = $c;
+            $choices = array($k);
+        } elseif ($c === $min) {
+            $choices[] = $k;
+        }
+    }
+    if ($choices === array()) {
+        $choices = array_keys($lanes);
+    }
+    shuffle($choices);
+    $pickedKey = (string)$choices[0];
+    $picked = $lanes[$pickedKey] ?? array('label' => 'technology tradeoffs', 'guidance' => '');
+    return array(
+        'key' => $pickedKey,
+        'label' => (string)($picked['label'] ?? 'technology tradeoffs'),
+        'guidance' => (string)($picked['guidance'] ?? ''),
+        'counts' => $counts,
+    );
+}
+
+function casual_lane_from_key(string $key, array $recent = array()): ?array
+{
+    $k = strtolower(trim($key));
+    if ($k === '') return null;
+    $lanes = casual_interest_lanes();
+    if (!isset($lanes[$k])) return null;
+    $picked = $lanes[$k];
+    $auto = casual_pick_interest_lane($recent);
+    $counts = is_array($auto) && isset($auto['counts']) && is_array($auto['counts']) ? $auto['counts'] : array();
+    return array(
+        'key' => $k,
+        'label' => (string)($picked['label'] ?? 'technology tradeoffs'),
+        'guidance' => (string)($picked['guidance'] ?? ''),
+        'counts' => $counts,
+        'override' => true,
+    );
+}
+
+function casual_fetch_latest_topic_titles(int $max = 120): array
+{
+    if (!function_exists('curl_init')) return array();
+    $titles = array();
+    $page = 0;
+    $maxPages = 6;
+    while ($page < $maxPages && count($titles) < $max) {
+        $url = rtrim(KONVO_BASE_URL, '/') . '/latest.json?order=created&ascending=false&page=' . $page;
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_HTTPHEADER => array(
+                'Api-Key: ' . KONVO_API_KEY,
+                'Api-Username: kirupa',
+            ),
+        ));
+        $body = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        if ($err !== '' || $status < 200 || $status >= 300 || !is_string($body) || trim($body) === '') {
+            break;
+        }
+        $json = json_decode($body, true);
+        if (!is_array($json)) break;
+        $topics = $json['topic_list']['topics'] ?? array();
+        if (!is_array($topics) || $topics === array()) break;
+        foreach ($topics as $topic) {
+            $t = trim((string)($topic['title'] ?? ''));
+            if ($t === '') continue;
+            $titles[] = $t;
+            if (count($titles) >= $max) break;
+        }
+        $page++;
+    }
+    return array_values(array_unique($titles));
+}
+
+function casual_normalized_title_key(string $title): string
+{
+    $s = strtolower(trim($title));
+    if ($s === '') return '';
+    $s = preg_replace('/https?:\/\/\S+/i', ' ', $s) ?? $s;
+    $s = preg_replace('/[^a-z0-9\s]/', ' ', $s) ?? $s;
+    $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+    return trim($s);
+}
+
+function casual_title_terms(string $title): array
+{
+    $s = casual_normalized_title_key($title);
+    if ($s === '') return array();
+    $parts = preg_split('/\s+/', $s);
+    if (!is_array($parts)) return array();
+    $stop = array('the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be', 'it', 'that', 'this', 'how', 'what', 'when', 'why', 'does', 'do', 'should', 'can', 'could');
+    $out = array();
+    foreach ($parts as $p) {
+        $p = trim((string)$p);
+        if ($p === '' || strlen($p) < 3) continue;
+        if (in_array($p, $stop, true)) continue;
+        $out[$p] = true;
+    }
+    return array_keys($out);
+}
+
+function casual_title_similarity_score(string $a, string $b): float
+{
+    $ta = casual_title_terms($a);
+    $tb = casual_title_terms($b);
+    if ($ta === array() || $tb === array()) return 0.0;
+    $setA = array_fill_keys($ta, true);
+    $setB = array_fill_keys($tb, true);
+    $inter = 0;
+    foreach ($setA as $k => $_) {
+        if (isset($setB[$k])) $inter++;
+    }
+    $union = count($setA) + count($setB) - $inter;
+    if ($union <= 0) return 0.0;
+    return (float)$inter / (float)$union;
+}
+
+function casual_title_too_similar_to_recent(string $candidateTitle, array $recentTitles): bool
+{
+    $ck = casual_normalized_title_key($candidateTitle);
+    if ($ck === '') return true;
+    foreach ($recentTitles as $rt) {
+        $rt = trim((string)$rt);
+        if ($rt === '') continue;
+        if (casual_normalized_title_key($rt) === $ck) return true;
+        $sim = casual_title_similarity_score($candidateTitle, $rt);
+        if ($sim >= 0.64) return true;
+    }
+    return false;
+}
+
+function casual_uniqueness_gate_with_llm(string $candidateTitle, string $candidateRaw, array $recentLocal, array $recentForum): array
+{
+    if (KONVO_OPENAI_API_KEY === '') {
+        return array('ok' => true, 'passes' => true, 'score' => 3.5, 'reason' => 'no_api_key_skip');
+    }
+
+    $localLines = casual_recent_hint_lines($recentLocal);
+    $forumLines = array();
+    $max = min(35, count($recentForum));
+    for ($i = 0; $i < $max; $i++) {
+        $t = trim((string)($recentForum[$i] ?? ''));
+        if ($t === '') continue;
+        $forumLines[] = '- ' . $t;
+    }
+    $forumHints = $forumLines === array() ? '(none)' : implode("\n", $forumLines);
+
+    $system = 'You are a strict novelty judge for forum topic proposals. '
+        . 'Return ONLY JSON with schema: {"passes":true|false,"novelty_score":0-5,"reason":"...","closest_match":"...","rewrite_hint":"..."}. '
+        . 'Pass only when the candidate is clearly different in angle from recent topics, not merely reworded.';
+    $user = "Candidate title:\n{$candidateTitle}\n\nCandidate body:\n{$candidateRaw}\n\n"
+        . "Recent topics from this worker:\n{$localLines}\n\n"
+        . "Recent forum topics:\n{$forumHints}\n\n"
+        . "Judge novelty now.";
+    $payload = array(
+        'model' => konvo_model_for_task('topic_uniqueness'),
+        'messages' => array(
+            array('role' => 'system', 'content' => $system),
+            array('role' => 'user', 'content' => $user),
+        ),
+        'temperature' => 0.1,
+    );
+
+    $res = casual_openai_json($payload);
+    if (!$res['ok']) {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_llm_error');
+    }
+    $content = trim((string)($res['json']['choices'][0]['message']['content'] ?? ''));
+    if ($content === '') {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_empty');
+    }
+    $obj = casual_extract_json_object($content);
+    if (!is_array($obj) || $obj === array()) {
+        return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_parse_error');
+    }
+    $passes = !empty($obj['passes']);
+    $score = (float)($obj['novelty_score'] ?? 0.0);
+    if ($score < 0.0) $score = 0.0;
+    if ($score > 5.0) $score = 5.0;
+    $reason = trim((string)($obj['reason'] ?? ''));
+    $closest = trim((string)($obj['closest_match'] ?? ''));
+    $hint = trim((string)($obj['rewrite_hint'] ?? ''));
+    return array(
+        'ok' => true,
+        'passes' => $passes && $score >= 4.0,
+        'score' => $score,
+        'reason' => $reason === '' ? 'no_reason' : $reason,
+        'closest_match' => $closest,
+        'rewrite_hint' => $hint,
+    );
 }
 
 function casual_pick_bot(array $bots): array
@@ -226,12 +641,12 @@ function casual_is_design_topic(string $text): bool
     return true;
 }
 
-function casual_is_ai_or_tech_topic(string $text): bool
+function casual_is_allowed_topic_scope(string $text): bool
 {
     $t = strtolower(trim($text));
     if ($t === '') return false;
     return (bool)preg_match(
-        '/\b(ai|artificial intelligence|llm|language model|chatbot|agentic|automation|algorithm|technology|tech|software|app|apps|platform|internet|web|browser|interface|interfaces|digital|creative tool|creative tools|productivity tool|workflow|device|devices|screen|screens|online community|social web|human computer|human-computer|machine creativity|generative)\b/i',
+        '/\b(ai|artificial intelligence|llm|language model|chatbot|agentic|automation|technology|tech|software|internet|web|browser|workflow|online community|social web|machine creativity|generative|video game|gaming|gameplay|player|npc|difficulty|level design|speedrun|retro game|science fiction|sci[- ]?fi|cyberpunk|space opera|futurism|product strategy|go to market|go-to-market|pricing|margin|hiring|business model|ux|ui|design system|creative process|developer experience|engineering culture|debugging|code review|product team)\b/i',
         $t
     );
 }
@@ -241,7 +656,7 @@ function casual_has_depth_signal(string $text): bool
     $t = strtolower(trim($text));
     if ($t === '') return false;
     return (bool)preg_match(
-        '/\b(tradeoff|trade-off|tension|constraint|second-order|side effect|friction|habit|workflow|trust|taste|craft|attention|memory|ownership|signal|meaning|quality|defaults|intuition|identity|abstraction|cost of convenience|creative process|human side)\b/i',
+        '/\b(tradeoff|trade-off|tension|constraint|second-order|side effect|friction|habit|workflow|trust|taste|craft|attention|memory|ownership|signal|meaning|quality|defaults|intuition|identity|abstraction|cost of convenience|creative process|human side|community|mastery|difficulty curve|discoverability|pricing pressure|hiring signal|creative control|player agency|team dynamics)\b/i',
         $t
     );
 }
@@ -323,7 +738,6 @@ function casual_normalize_signature(string $text, string $signature): string
 function casual_quirky_media_urls(): array
 {
     return array(
-        'https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif',
         'https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif',
         'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif',
         'https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif',
@@ -334,12 +748,53 @@ function casual_quirky_media_urls(): array
     );
 }
 
+function casual_media_url_is_reachable(string $url): bool
+{
+    $u = trim($url);
+    if ($u === '' || !preg_match('/^https?:\/\/\S+$/i', $u)) return false;
+    static $cache = array();
+    if (isset($cache[$u])) return (bool)$cache[$u];
+
+    if (!function_exists('curl_init')) {
+        $cache[$u] = false;
+        return false;
+    }
+
+    $ch = curl_init($u);
+    curl_setopt_array($ch, array(
+        CURLOPT_NOBODY => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_USERAGENT => 'konvo-casual-worker/1.0',
+    ));
+    curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $ctype = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    $ok = ($err === '' && $status >= 200 && $status < 400 && preg_match('/\b(image|video)\b/i', $ctype));
+    $cache[$u] = (bool)$ok;
+    return (bool)$ok;
+}
+
 function casual_pick_quirky_media_url(string $seed): string
 {
     $urls = casual_quirky_media_urls();
     if ($urls === array()) return '';
     $hash = abs((int)crc32(strtolower(trim($seed))));
-    return (string)$urls[$hash % count($urls)];
+    $count = count($urls);
+    $start = $hash % $count;
+    for ($i = 0; $i < $count; $i++) {
+        $idx = ($start + $i) % $count;
+        $cand = trim((string)$urls[$idx]);
+        if ($cand !== '' && casual_media_url_is_reachable($cand)) {
+            return $cand;
+        }
+    }
+    return '';
 }
 
 function casual_append_quirky_media_before_signature(string $raw, string $signature, string $url): string
@@ -412,8 +867,14 @@ function casual_validate_generated_topic(string $title, string $raw): array
     if (casual_looks_too_technical($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic looked too technical');
     }
-    if (!casual_is_design_topic($title . "\n" . $raw) && !casual_is_ai_or_tech_topic($title . "\n" . $raw)) {
-        return array('ok' => false, 'error' => 'topic was outside design/ai/technology focus');
+    if (!casual_title_looks_question_like($title) || !str_ends_with($title, '?')) {
+        return array('ok' => false, 'error' => 'title must be an open question');
+    }
+    if (!str_contains($raw, '?')) {
+        return array('ok' => false, 'error' => 'body must include an open question');
+    }
+    if (!casual_is_allowed_topic_scope($title . "\n" . $raw)) {
+        return array('ok' => false, 'error' => 'topic must stay within tech/design/gaming/business/dev-culture scope');
     }
     if (!casual_has_depth_signal($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic did not show enough depth');
@@ -576,7 +1037,7 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
     );
 }
 
-function casual_generate_with_llm(array $bot, string $signature, array $recent, bool $strict): array
+function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = '', array $lane = array()): array
 {
     $botName = trim((string)($bot['name'] ?? 'BayMax'));
     $soulKey = trim((string)($bot['soul_key'] ?? strtolower($botName)));
@@ -590,24 +1051,49 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         ? 'Your previous draft was too close to a recent topic, too code-heavy, too shallow, or not thoughtful enough. Regenerate with a different angle and a stronger insight or tradeoff.'
         : 'Generate the best first draft now.';
 
-    $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
-        . 'You generate a single thoughtful, conversation-worthy forum topic starter for humans. '
-        . 'Return ONLY JSON with this schema: '
-        . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","title":"...","raw":"..."}. '
-        . 'Rules: topic must be about design, AI, technology, the web, digital culture, software tools, or how people interact with software. '
-        . 'It should feel somewhat profound without sounding academic or robotic. '
-        . 'Anchor the topic around one non-obvious observation, tradeoff, tension, second-order effect, or subtle design/technology insight. '
-        . 'Avoid coding help requests, implementation details, product launch news, politics, religion, rage bait, tragedy, and empty hot takes. '
-        . 'Use natural human language, concise and reflective. '
-        . 'Title: 5-12 words, complete thought, intriguing, no colon, no clickbait, no emoji. '
-        . 'Body: 3-5 short sentences max, ideally split into 2 short paragraphs. Start with the observation, then deepen it. '
-        . 'A closing question is optional only if it feels genuinely earned, not forced. '
-        . 'No links, no hashtags, no code blocks. '
-        . 'Do not sign the post; Discourse already shows the author username.';
+    $forumRecentLines = array();
+    $maxForum = min(26, count($recentForumTitles));
+    for ($i = 0; $i < $maxForum; $i++) {
+        $t = trim((string)($recentForumTitles[$i] ?? ''));
+        if ($t === '') continue;
+        $forumRecentLines[] = '- ' . $t;
+    }
+    $forumRecentHints = $forumRecentLines === array() ? '(none)' : implode("\n", $forumRecentLines);
 
-    $user = "Generate one new thoughtful forum topic now.\n"
-        . "Desired domains: design, AI, technology, the web, digital culture, creative tools.\n"
+    $extraAvoidance = trim($extraAvoidance);
+    $extraAvoidanceLine = $extraAvoidance !== '' ? ("Special avoidance instruction:\n" . $extraAvoidance . "\n\n") : '';
+    $laneLabel = trim((string)($lane['label'] ?? 'broad technology tradeoffs'));
+    $laneGuidance = trim((string)($lane['guidance'] ?? ''));
+    $laneKey = trim((string)($lane['key'] ?? 'general'));
+    $laneFocusConstraint = ($laneKey !== 'sci_fi_ai')
+        ? 'For this lane, do not make AI/LLM the central subject. You may mention AI only as a secondary example. Prefer a non-AI title.'
+        : 'For this lane, sci-fi + AI framing is allowed and expected.';
+
+    $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
+        . 'You generate a single open-question forum topic starter for humans. '
+        . 'Return ONLY JSON with this schema: '
+        . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
+        . 'Rules: topic must be within technology culture broadly: software, games, design, business impact, developer life, product workflows, or science-fiction framing tied to modern tech. '
+        . 'Do not produce architecture showcase chatter, link shares, GIF posts, product launch reposts, or news summaries. '
+        . 'Anchor the topic around one practical tension or tradeoff and ask for lived experience from others. '
+        . 'Avoid coding help requests, implementation details, politics, religion, rage bait, tragedy, and empty hot takes. '
+        . 'Use natural human language, concise and reflective. '
+        . 'Title: 6-13 words, complete thought, must end with a question mark, no colon, no clickbait, no emoji. '
+        . 'Body: 2-4 short sentences max split into 2 short paragraphs. '
+        . 'The final sentence MUST be one open discussion question ending with "?". '
+        . 'No links, no hashtags, no code blocks. '
+        . 'Do not sign the post; Discourse already shows the author username. '
+        . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording.';
+
+    $user = "Generate one new broad tech-culture discussion question now.\n"
+        . "Desired domains across runs: video games, sci-fi framing, business impact, design impact, developer life, product/workflow tradeoffs.\n"
+        . "Primary lane for THIS run: {$laneLabel}\n"
+        . ($laneGuidance !== '' ? ("Lane guidance: {$laneGuidance}\n") : '')
+        . "Lane focus constraint: {$laneFocusConstraint}\n"
+        . "Set plan_lane to exactly this key: {$laneKey}\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
+        . "Recent forum topics to avoid paraphrasing:\n{$forumRecentHints}\n\n"
+        . $extraAvoidanceLine
         . $strictLine;
 
     $payload = array(
@@ -640,6 +1126,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     $planMood = trim((string)($obj['plan_mood'] ?? ''));
     $planAngle = trim((string)($obj['plan_angle'] ?? ''));
     $planIntent = trim((string)($obj['plan_posting_intent'] ?? ''));
+    $planLane = trim((string)($obj['plan_lane'] ?? $laneKey));
 
     if ($title === '' || $raw === '') {
         return array('ok' => false, 'error' => 'Model JSON missing title/raw', 'parsed' => $obj);
@@ -658,6 +1145,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
             'mood' => $planMood,
             'angle' => $planAngle,
             'posting_intent' => $planIntent,
+            'lane' => $planLane,
         ),
     );
 }
@@ -717,23 +1205,112 @@ if (KONVO_OPENAI_API_KEY === '') {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+$force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+$allowCasualEnv = strtolower(trim((string)KONVO_ALLOW_CASUAL_TOPIC_POSTS));
+$allowCasualTopics = ($allowCasualEnv === '')
+    ? true
+    : in_array($allowCasualEnv, array('1', 'true', 'yes', 'on'), true);
+$allowPosting = $allowNewTopics || $allowCasualTopics;
+
+if (!$dryRun && !$allowPosting && !$force) {
+    casual_out(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_CASUAL_TOPIC_POSTS=1 (or KONVO_ALLOW_NEW_TOPICS=1) or pass force=1 to override.',
+    ));
+}
+
 $bot = casual_pick_bot($bots);
 $signatureSeed = strtolower((string)($bot['username'] ?? 'baymax') . '|casual-topic|' . date('Y-m-d-H'));
 $signature = function_exists('konvo_signature_with_optional_emoji')
     ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'BayMax'), $signatureSeed)
     : (string)($bot['name'] ?? 'BayMax');
 $recent = casual_load_recent_topics();
+$lane = casual_pick_interest_lane($recent);
+$laneOverride = trim((string)($_GET['lane'] ?? ''));
+if ($laneOverride !== '') {
+    $over = casual_lane_from_key($laneOverride, $recent);
+    if (is_array($over)) {
+        $lane = $over;
+    }
+}
+$today = casual_today_key();
+if (!$dryRun && !$force) {
+    $todayCount = casual_daily_count_for($today);
+    if ($todayCount >= 3) {
+        casual_out(200, array(
+            'ok' => true,
+            'posted' => false,
+            'reason' => 'daily_casual_topic_cap_reached',
+            'date' => $today,
+            'today_post_count' => $todayCount,
+            'daily_cap' => 3,
+        ));
+    }
+}
+$recentForumTitles = casual_fetch_latest_topic_titles(120);
 
 $attempts = array();
 $generated = null;
-for ($i = 0; $i < 3; $i++) {
+$bestFallback = null;
+$bestFallbackScore = -1.0;
+$extraAvoidance = '';
+$requestStartTs = isset($_SERVER['REQUEST_TIME_FLOAT']) ? (float)$_SERVER['REQUEST_TIME_FLOAT'] : microtime(true);
+for ($i = 0; $i < 4; $i++) {
+    if ((microtime(true) - $requestStartTs) > 32.0) {
+        break;
+    }
     $strict = $i > 0;
-    $res = casual_generate_with_llm($bot, $signature, $recent, $strict);
+    $res = casual_generate_with_llm($bot, $signature, $recent, $recentForumTitles, $strict, $extraAvoidance, $lane);
+    if (!empty($res['ok'])) {
+        $tooSimilar = casual_title_too_similar_to_recent((string)($res['title'] ?? ''), $recentForumTitles);
+        if ($tooSimilar) {
+            $res = array('ok' => false, 'error' => 'title too similar to recent forum topics', 'title' => (string)($res['title'] ?? ''));
+        }
+    }
+    if (!empty($res['ok'])) {
+        $gate = casual_uniqueness_gate_with_llm((string)$res['title'], (string)$res['raw'], $recent, $recentForumTitles);
+        $res['uniqueness_gate'] = $gate;
+        if (!empty($gate['ok']) && empty($gate['passes'])) {
+            $score = (float)($gate['score'] ?? 0.0);
+            if ($score > $bestFallbackScore) {
+                $bestFallbackScore = $score;
+                $bestFallback = $res;
+            }
+            $res = array(
+                'ok' => false,
+                'error' => 'uniqueness gate rejected candidate',
+                'gate' => $gate,
+                'title' => (string)($res['title'] ?? ''),
+            );
+        } elseif (empty($gate['ok'])) {
+            // If novelty gate itself fails, keep best generated draft so we don't hard-fail.
+            if ($bestFallback === null) {
+                $bestFallback = $res;
+                $bestFallbackScore = 3.6;
+            }
+        }
+    }
     $attempts[] = $res;
     if (!empty($res['ok'])) {
         $generated = $res;
         break;
     }
+    $err = trim((string)($res['error'] ?? ''));
+    $gateHint = is_array($res['gate'] ?? null) ? trim((string)($res['gate']['rewrite_hint'] ?? '')) : '';
+    $closest = is_array($res['gate'] ?? null) ? trim((string)($res['gate']['closest_match'] ?? '')) : '';
+    $pieces = array();
+    if ($err !== '') $pieces[] = $err;
+    if ($closest !== '') $pieces[] = 'Too close to: ' . $closest;
+    if ($gateHint !== '') $pieces[] = 'Rewrite hint: ' . $gateHint;
+    $extraAvoidance = implode(' ', $pieces);
+}
+
+if (!is_array($generated) && is_array($bestFallback) && $bestFallback !== array()) {
+    $generated = $bestFallback;
 }
 
 if (!is_array($generated) || empty($generated['ok'])) {
@@ -751,38 +1328,17 @@ if (!is_array($generated) || empty($generated['ok'])) {
 $title = (string)$generated['title'];
 $raw = (string)$generated['raw'];
 $plan = isset($generated['plan']) && is_array($generated['plan']) ? $generated['plan'] : array();
-$categoryDecision = casual_pick_category_with_llm($title, $raw, $bot, $plan);
-$categoryId = (int)($categoryDecision['category_id'] ?? (int)KONVO_TALK_CATEGORY_ID);
-$gamingDetected = ($categoryId === (int)KONVO_GAMING_CATEGORY_ID);
-if ($gamingDetected) {
-    if (strtolower((string)($bot['username'] ?? '')) !== 'vaultboy') {
-        $vaultboyBot = casual_find_bot($bots, 'vaultboy');
-        if (is_array($vaultboyBot)) {
-            $bot = $vaultboyBot;
-            $signatureSeed = strtolower((string)($bot['username'] ?? 'vaultboy') . '|casual-topic|' . date('Y-m-d-H'));
-            $signature = function_exists('konvo_signature_with_optional_emoji')
-                ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'VaultBoy'), $signatureSeed)
-                : (string)($bot['name'] ?? 'VaultBoy');
-            $vgRes = casual_generate_with_llm($bot, $signature, $recent, true);
-            if (!empty($vgRes['ok'])) {
-                $title = (string)$vgRes['title'];
-                $raw = (string)$vgRes['raw'];
-                $plan = isset($vgRes['plan']) && is_array($vgRes['plan']) ? $vgRes['plan'] : $plan;
-                $categoryDecision = casual_pick_category_with_llm($title, $raw, $bot, $plan);
-                $categoryId = (int)($categoryDecision['category_id'] ?? (int)KONVO_TALK_CATEGORY_ID);
-                $gamingDetected = ($categoryId === (int)KONVO_GAMING_CATEGORY_ID);
-            } else {
-                $raw = casual_normalize_signature($raw, $signature);
-            }
-        }
-    }
-}
-$quirkySeed = abs((int)crc32(strtolower((string)($bot['username'] ?? 'baymax') . '|casual-quirky|' . $title . '|' . substr($raw, 0, 180))));
-$quirkyMode = (($quirkySeed % 100) < 14);
-$quirkyMediaUrl = $quirkyMode ? casual_pick_quirky_media_url((string)($bot['username'] ?? 'baymax') . '|' . $title . '|' . $raw) : '';
-if ($quirkyMediaUrl !== '') {
-    $raw = casual_append_quirky_media_before_signature($raw, $signature, $quirkyMediaUrl);
-}
+$categoryDecision = array(
+    'ok' => true,
+    'category_key' => 'talk',
+    'category_id' => (int)KONVO_TALK_CATEGORY_ID,
+    'reason' => 'forced_ai_tech_discussion_mode',
+    'confidence' => 1.0,
+);
+$categoryId = (int)KONVO_TALK_CATEGORY_ID;
+$gamingDetected = false;
+$quirkyMode = false;
+$quirkyMediaUrl = '';
 
 if ($dryRun) {
     casual_out(200, array(
@@ -791,6 +1347,7 @@ if ($dryRun) {
         'action' => 'would_post_casual_topic',
         'bot' => $bot,
         'plan' => $plan,
+        'lane' => $lane,
         'topic' => array(
             'title' => $title,
             'category_id' => $categoryId,
@@ -821,7 +1378,9 @@ if (!$post['ok']) {
 $topicId = (int)($post['body']['topic_id'] ?? 0);
 $postNumber = (int)($post['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
-casual_remember_topic($title, (string)($plan['angle'] ?? ''));
+casual_remember_topic($title, (string)($plan['angle'] ?? ''), (string)($plan['lane'] ?? (string)($lane['key'] ?? '')));
+casual_consensus_register_topic($topicId, $bot, $title, $categoryId, $plan);
+$todayCountAfterPost = casual_daily_count_increment($today);
 
 casual_out(200, array(
     'ok' => true,
@@ -830,11 +1389,17 @@ casual_out(200, array(
     'topic_url' => $topicUrl,
     'bot' => $bot,
     'plan' => $plan,
+    'lane' => $lane,
     'topic' => array(
         'title' => $title,
         'category_id' => $categoryId,
         'gaming_detected' => $gamingDetected,
         'category_decision' => $categoryDecision,
+    ),
+    'daily_cap' => array(
+        'date' => $today,
+        'count_after_post' => $todayCountAfterPost,
+        'max_per_day' => 3,
     ),
     'quirky_media' => array(
         'enabled' => $quirkyMode,
