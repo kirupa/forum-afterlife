@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+function getForumDomain(): string
+{
+    return trim((string)getenv('FORUM_DOMAIN')) ?: 'cax.do';
+}
+
 function jsonOut(array $data, int $status = 200): void
 {
     http_response_code($status);
@@ -94,7 +99,7 @@ function isQuestionLikeText(string $text): bool
         return true;
     }
     return (bool)preg_match(
-        '/\b(what|why|how|when|where|who|which|can you|could you|would you|do you|did you|is there|are there|thoughts on|any tips|any advice|i wonder|i[\'’]m curious|curious)\b/i',
+        '/\b(what|why|how|when|where|who|which|can you|could you|would you|do you|did you|is there|are there|thoughts on|any tips|any advice|i wonder|i[\'\']m curious|curious)\b/i',
         $t
     );
 }
@@ -125,7 +130,7 @@ function looksTechnicalText(string $text): bool
     if (preg_match('/```|`[^`]+`/', $t)) {
         return true;
     }
-    return (bool)preg_match('/\b(js|javascript|typescript|html|css|api|cache|react|vue|node|sql|queryselectorall|htmlcollection|nodelist|dom|function|class|array|object|promise|async|await|bug|error|exception|stack)\b/i', $t);
+    return (bool)preg_match('/\b(js|javascript|typescript|html|css|api|cache|react|vue|node|sql|queryselectorall|htmlcollection|nodelist|dom|function|class|array|object|promise|async|await|bug|error|code|php|python|java|c\+\+|database|server|client)\b/i', $t);
 }
 
 function baseUrlForLocalCalls(): string
@@ -216,7 +221,6 @@ function fetchJson(string $url): ?array
 
 function repliedToBotUsername(array $payload, array $post, int $topicId, array $botEndpointMap): string
 {
-    // Prefer direct fields from payload when available.
     $candidate = '';
     if (isset($post['reply_to_user']) && is_array($post['reply_to_user'])) {
         $candidate = normalizeMention((string)($post['reply_to_user']['username'] ?? ''));
@@ -231,13 +235,13 @@ function repliedToBotUsername(array $payload, array $post, int $topicId, array $
         return $candidate;
     }
 
-    // Fallback: resolve replied post from topic stream using post_number.
     $replyToPostNumber = (int)($post['reply_to_post_number'] ?? ($payload['reply_to_post_number'] ?? 0));
     if ($replyToPostNumber <= 0 || $topicId <= 0) {
         return '';
     }
 
-    $topic = fetchJson('https://forum.kirupa.com/t/' . $topicId . '.json');
+    $forumDomain = getForumDomain();
+    $topic = fetchJson('https://' . $forumDomain . '/t/' . $topicId . '.json');
     if (!is_array($topic)) {
         return '';
     }
@@ -268,7 +272,8 @@ function topicOpBotUsername(int $topicId, array $botEndpointMap): string
         return '';
     }
 
-    $topic = fetchJson('https://forum.kirupa.com/t/' . $topicId . '.json');
+    $forumDomain = getForumDomain();
+    $topic = fetchJson('https://' . $forumDomain . '/t/' . $topicId . '.json');
     if (!is_array($topic)) {
         return '';
     }
@@ -369,7 +374,6 @@ function alreadyProcessedKey(string $dedupeKey): bool
 
 function appendEventLog(string $line): void
 {
-    // Logging intentionally disabled to avoid writing log files.
     if ($line === '') {
         return;
     }
@@ -428,13 +432,12 @@ if ($postId <= 0 || $topicId <= 0) {
     jsonOut(['ok' => false, 'error' => 'Missing post/topic id.'], 400);
 }
 
-$trackedBots = ['baymax', 'kirupabot', 'vaultboy', 'mechaprime', 'yoshiii', 'bobamilk', 'wafflefries', 'quelly', 'sora', 'sarah_connor', 'ellen1979', 'arthurdent', 'hariseldon', 'kirupabotx', 'coding_agent_bot'];
+$trackedBots = ['baymax', 'kirupabot', 'caxbot', 'vaultboy', 'mechaprime', 'yoshiii', 'bobamilk', 'wafflefries', 'quelly', 'sora', 'sarah_connor', 'ellen1979', 'arthurdent', 'hariseldon'];
 $isTrackedBotAuthor = in_array($author, $trackedBots, true);
 if ($isTrackedBotAuthor && $author === 'kirupabot') {
     jsonOut(['ok' => true, 'ignored' => true, 'reason' => 'Author is a bot.']);
 }
 
-// Dedupe by event + post + version, so edited posts can trigger once per new revision.
 $postVersion = (int)($post['version'] ?? ($payload['version'] ?? 0));
 $dedupeKey = ($event !== '' ? $event : 'unknown') . ':' . $postId . ':' . $postVersion;
 if (alreadyProcessedKey($dedupeKey)) {
@@ -445,6 +448,7 @@ $mentions = extractMentions($payload, $raw);
 $botEndpointMap = [
     'baymax' => 'konvo_baymax_reply.php',
     'kirupabot' => 'konvo_kirupabot_reply.php',
+    'caxbot' => 'konvo_caxbot_reply.php',
     'vaultboy' => 'konvo_vaultboy_reply.php',
     'mechaprime' => 'konvo_mpr_reply.php',
     'yoshiii' => 'konvo_yoshiii_reply.php',
@@ -463,22 +467,22 @@ if ($isTrackedBotAuthor && $author !== 'kirupabot') {
     $topicTitle = trim((string)($post['topic_title'] ?? ($payload['topic_title'] ?? '')));
     $topicText = $topicTitle . "\n" . $raw;
     $looksTechnical = ($categoryId === 42) || looksTechnicalText($topicText);
-    $alreadyHasKirupaLink = stripos($raw, 'kirupa.com') !== false;
-    if ($looksTechnical && !$alreadyHasKirupaLink) {
+    $alreadyHasCaxLink = stripos($raw, 'cax.do') !== false;
+    if ($looksTechnical && !$alreadyHasCaxLink) {
         $baseUrl = baseUrlForLocalCalls();
-        $url = $baseUrl . '/konvo_kirupabot_reply.php';
+        $url = $baseUrl . '/konvo_caxbot_reply.php';
         $res = postFormWithRetry($url, [
             'topic_id' => (string)$topicId,
             'reply_target' => 'latest',
             'force_reply_to_bot' => '1',
-            'force_kirupa_link' => '1',
+            'force_cax_link' => '1',
         ]);
         if (empty($res['ok'])) {
             $res = postFormWithRetry($url, [
                 'topic_id' => (string)$topicId,
                 'reply_target' => 'latest',
                 'force_reply_to_bot' => '1',
-                'force_kirupa_link' => '1',
+                'force_cax_link' => '1',
                 'safe_mode' => '1',
             ], 2, 250000);
         }
@@ -488,10 +492,10 @@ if ($isTrackedBotAuthor && $author !== 'kirupabot') {
             'post_id' => $postId,
             'topic_id' => $topicId,
             'author' => $author,
-            'auto_kirupabot_link' => true,
+            'auto_caxbot_link' => true,
             'triggered' => [[
-                'bot' => 'kirupabot',
-                'endpoint' => 'konvo_kirupabot_reply.php',
+                'bot' => 'caxbot',
+                'endpoint' => 'konvo_caxbot_reply.php',
                 'ok' => $res['ok'],
                 'status' => $res['status'],
                 'attempts' => (int)($res['attempts'] ?? 1),
@@ -504,7 +508,7 @@ if ($isTrackedBotAuthor && $author !== 'kirupabot') {
     jsonOut([
         'ok' => true,
         'ignored' => true,
-        'reason' => 'Author is a bot; no kirupaBot link action required.',
+        'reason' => 'Author is a bot; no caxBot link action required.',
         'author' => $author,
         'topic_id' => $topicId,
         'post_id' => $postId,
@@ -518,7 +522,6 @@ foreach ($mentions as $mention) {
     }
 }
 
-// If user directly replies to a bot post (without mention), trigger that bot.
 $replyBot = repliedToBotUsername($payload, $post, $topicId, $botEndpointMap);
 $questionLike = isQuestionLikeText($raw);
 $gratitudeLike = isGratitudeLikeText($raw);
@@ -535,8 +538,6 @@ if ($replyBot !== '') {
     }
 }
 
-// Fallback: if topic was started by a bot and user asks a question in-topic,
-// trigger the OP bot even when Discourse didn't set reply_to_post_number.
 $topicOpBot = '';
 if ($toTrigger === [] && $questionLike && $postNumber > 1) {
     $topicOpBot = topicOpBotUsername($topicId, $botEndpointMap);
@@ -579,8 +580,8 @@ foreach ($toTrigger as $bot => $script) {
     if (isset($triggerMeta[$bot]['force_reply_to_bot']) && $triggerMeta[$bot]['force_reply_to_bot'] === true) {
         $fields['force_reply_to_bot'] = '1';
     }
-    if (isset($triggerMeta[$bot]['force_kirupa_link']) && $triggerMeta[$bot]['force_kirupa_link'] === true) {
-        $fields['force_kirupa_link'] = '1';
+    if (isset($triggerMeta[$bot]['force_cax_link']) && $triggerMeta[$bot]['force_cax_link'] === true) {
+        $fields['force_cax_link'] = '1';
     }
     $res = postFormWithRetry($url, $fields);
     $usedSafeMode = false;
