@@ -3828,8 +3828,9 @@ function worker_pick_orphan_bot_topic_over_24h($topics, $seenState, $maxScan = 3
         if ($ageSec < (24 * 3600)) continue;
 
         $idKey = (string)$topicId;
-        if (isset($seenState[$idKey]) && ((int)$seenState[$idKey]) > 0) {
-            // Already acted on recently by this worker.
+        $seenAt = isset($seenState[$idKey]) ? (int)$seenState[$idKey] : 0;
+        if ($seenAt > 0 && ($now - $seenAt) < (6 * 3600)) {
+            // Cooldown: avoid immediate re-attempt churn on the same orphan thread.
             continue;
         }
         $pool[] = array('topic' => $t, 'age_seconds' => $ageSec);
@@ -5062,14 +5063,14 @@ $consensusState = worker_consensus_load();
 $consensusPick = worker_pick_consensus_topic($latest['topic_list']['topics'], $consensusState, $seen);
 $consensusFlowActive = is_array($consensusPick) && isset($consensusPick['topic']) && is_array($consensusPick['topic']);
 $consensusTopicState = $consensusFlowActive && isset($consensusPick['state']) && is_array($consensusPick['state']) ? $consensusPick['state'] : array();
-$orphanPriority = null;
-if (!$consensusFlowActive) {
-    $orphanPriority = worker_pick_orphan_bot_topic_over_24h($latest['topic_list']['topics'], $seen, 30);
-}
-$topic = $consensusFlowActive
-    ? $consensusPick['topic']
-    : (is_array($orphanPriority) && isset($orphanPriority['topic']) && is_array($orphanPriority['topic'])
-        ? $orphanPriority['topic']
+$orphanPriority = worker_pick_orphan_bot_topic_over_24h($latest['topic_list']['topics'], $seen, 30);
+$forceOrphanReviveMode = is_array($orphanPriority)
+    && isset($orphanPriority['topic'])
+    && is_array($orphanPriority['topic']);
+$topic = $forceOrphanReviveMode
+    ? $orphanPriority['topic']
+    : ($consensusFlowActive
+        ? $consensusPick['topic']
         : pick_candidate_topic($latest['topic_list']['topics'], $seen));
 if (!is_array($topic)) {
     out_json(200, array('ok' => true, 'posted' => false, 'reason' => 'No eligible recent topics found.'));
@@ -5094,6 +5095,26 @@ $recentHasHuman = worker_recent_has_human($posts, 6);
 $opPost = $posts[0];
 $latestPost = $posts[count($posts) - 1];
 $opUsername = isset($opPost['username']) ? (string)$opPost['username'] : '';
+
+// Safety net: if the selected topic is itself an unreplied bot OP older than 24h,
+// force orphan-revive behavior even if initial picker path missed it.
+if (!$forceOrphanReviveMode && count($posts) === 1 && is_bot_user($opUsername)) {
+    $opTs = isset($opPost['created_at']) ? strtotime((string)$opPost['created_at']) : false;
+    if ($opTs === false && isset($topic['created_at'])) {
+        $opTs = strtotime((string)$topic['created_at']);
+    }
+    $opAgeSec = ($opTs !== false) ? max(0, time() - (int)$opTs) : 0;
+    if ($opAgeSec >= (24 * 3600)) {
+        $forceOrphanReviveMode = true;
+        $orphanPriority = array(
+            'topic' => $topic,
+            'detail' => $topicDetail,
+            'age_seconds' => $opAgeSec,
+            'op_username' => $opUsername,
+        );
+    }
+}
+
 $threadOpRaw = post_content_text($opPost);
 $latestUsername = isset($latestPost['username']) ? (string)$latestPost['username'] : $opUsername;
 $targetRaw = post_content_text($latestPost);
@@ -5577,6 +5598,9 @@ if (!$allowNonTechnicalCodeSnippetsTop) {
 $duplicateGate = $learnerFollowupModeTop
     ? array('skip' => false, 'reason' => '')
     : worker_detect_duplicate_reply($replyText, $targetRaw, $recentOtherBotPosts, $recentSameBotPosts);
+if (!empty($duplicateGate['skip']) && $forceOrphanReviveMode) {
+    $duplicateGate = array('skip' => false, 'reason' => 'forced_orphan_revive_mode');
+}
 if (!empty($duplicateGate['skip'])) {
     if (!$fallbackUsed) {
         out_json(200, array(
@@ -5603,6 +5627,9 @@ $newDetailsGate = $learnerFollowupModeTop
     : ($forceLowEffortCadenceTop
         ? array('applied' => false, 'adds_new_details' => true, 'reason' => 'low_effort_cadence_override')
         : worker_reply_adds_new_details_pass($replyText, $posts, max(1, count($posts))));
+if (empty($newDetailsGate['adds_new_details']) && $forceOrphanReviveMode) {
+    $newDetailsGate = array('applied' => false, 'adds_new_details' => true, 'reason' => 'forced_orphan_revive_mode');
+}
 if (empty($newDetailsGate['adds_new_details'])) {
     if (!$fallbackUsed) {
         out_json(200, array(
@@ -5663,9 +5690,10 @@ if ($dryRun) {
             'state' => $consensusTopicState,
         ),
         'orphan_priority' => array(
-            'active' => is_array($orphanPriority),
-            'age_seconds' => is_array($orphanPriority) ? (int)($orphanPriority['age_seconds'] ?? 0) : 0,
-            'op_username' => is_array($orphanPriority) ? (string)($orphanPriority['op_username'] ?? '') : '',
+            'active' => $forceOrphanReviveMode,
+            'age_seconds' => $forceOrphanReviveMode ? (int)($orphanPriority['age_seconds'] ?? 0) : 0,
+            'op_username' => $forceOrphanReviveMode ? (string)($orphanPriority['op_username'] ?? '') : '',
+            'force_post' => $forceOrphanReviveMode,
         ),
         'selected_bot' => $bot,
         'recent_other_bot_posts' => $recentOtherBotPosts,
@@ -5775,9 +5803,10 @@ out_json(200, array(
         'state' => $consensusTopicState,
     ),
     'orphan_priority' => array(
-        'active' => is_array($orphanPriority),
-        'age_seconds' => is_array($orphanPriority) ? (int)($orphanPriority['age_seconds'] ?? 0) : 0,
-        'op_username' => is_array($orphanPriority) ? (string)($orphanPriority['op_username'] ?? '') : '',
+        'active' => $forceOrphanReviveMode,
+        'age_seconds' => $forceOrphanReviveMode ? (int)($orphanPriority['age_seconds'] ?? 0) : 0,
+        'op_username' => $forceOrphanReviveMode ? (string)($orphanPriority['op_username'] ?? '') : '',
+        'force_post' => $forceOrphanReviveMode,
     ),
     'selected_bot' => $bot,
     'recent_other_bot_posts' => $recentOtherBotPosts,
