@@ -116,6 +116,109 @@ function worker_consensus_state_path()
     return $dir . '/casual_consensus_state.json';
 }
 
+function worker_opening_memory_path()
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    return $dir . '/recent_reply_openings.json';
+}
+
+function worker_load_opening_memory()
+{
+    $path = worker_opening_memory_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function worker_save_opening_memory($rows)
+{
+    if (!is_array($rows)) $rows = array();
+    $now = time();
+    $clean = array();
+    foreach ($rows as $row) {
+        if (!is_array($row)) continue;
+        $stem = trim((string)($row['stem'] ?? ''));
+        $ts = (int)($row['ts'] ?? 0);
+        if ($stem === '' || $ts <= 0) continue;
+        if (($now - $ts) > (7 * 24 * 3600)) continue;
+        $clean[] = array(
+            'stem' => $stem,
+            'ts' => $ts,
+            'topic_id' => (int)($row['topic_id'] ?? 0),
+            'bot' => trim((string)($row['bot'] ?? '')),
+        );
+    }
+    usort($clean, static function ($a, $b) {
+        return ((int)($b['ts'] ?? 0)) <=> ((int)($a['ts'] ?? 0));
+    });
+    if (count($clean) > 250) $clean = array_slice($clean, 0, 250);
+    @file_put_contents(worker_opening_memory_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function worker_opening_stem($text)
+{
+    $open = strtolower(trim((string)worker_extract_opening_line((string)$text)));
+    if ($open === '') return '';
+    $open = preg_replace('/https?:\/\/\S+/i', '', $open) ?? $open;
+    $open = preg_replace('/[^a-z0-9\s]/i', ' ', $open) ?? $open;
+    $open = preg_replace('/\s+/', ' ', $open) ?? $open;
+    $open = trim((string)$open);
+    if ($open === '') return '';
+    $parts = explode(' ', $open);
+    if (count($parts) > 10) $parts = array_slice($parts, 0, 10);
+    return trim((string)implode(' ', $parts));
+}
+
+function worker_recent_opening_stems($memory, $hours = 72, $limit = 30)
+{
+    if (!is_array($memory) || $memory === array()) return array();
+    $now = time();
+    $cutoff = $now - max(1, (int)$hours) * 3600;
+    $seen = array();
+    $out = array();
+    foreach ($memory as $row) {
+        if (!is_array($row)) continue;
+        $stem = trim((string)($row['stem'] ?? ''));
+        $ts = (int)($row['ts'] ?? 0);
+        if ($stem === '' || $ts < $cutoff) continue;
+        if (isset($seen[$stem])) continue;
+        $seen[$stem] = true;
+        $out[] = $stem;
+        if (count($out) >= max(5, (int)$limit)) break;
+    }
+    return $out;
+}
+
+function worker_opening_stem_reused($stem, $recentStems)
+{
+    $stem = trim((string)$stem);
+    if ($stem === '' || !is_array($recentStems) || $recentStems === array()) return false;
+    foreach ($recentStems as $s) {
+        $s = trim((string)$s);
+        if ($s === '') continue;
+        if ($s === $stem) return true;
+        if (strpos($s, $stem) === 0 || strpos($stem, $s) === 0) return true;
+    }
+    return false;
+}
+
+function worker_remember_opening_stem($stem, $topicId, $botUsername)
+{
+    $stem = trim((string)$stem);
+    if ($stem === '') return;
+    $rows = worker_load_opening_memory();
+    $rows[] = array(
+        'stem' => $stem,
+        'ts' => time(),
+        'topic_id' => (int)$topicId,
+        'bot' => trim((string)$botUsername),
+    );
+    worker_save_opening_memory($rows);
+}
+
 function worker_consensus_load()
 {
     $path = worker_consensus_state_path();
@@ -4378,6 +4481,11 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $pollReasonSentence = '';
     $recentBotContext = worker_recent_other_bot_context($recentBotPosts);
     $recentSameBotContext = worker_recent_same_bot_context($recentSameBotPosts);
+    $openingMemory = worker_load_opening_memory();
+    $recentOpeningStems = worker_recent_opening_stems($openingMemory, 96, 24);
+    $recentOpeningHints = $recentOpeningStems === array()
+        ? '(none)'
+        : implode("\n", array_map(static function ($s) { return '- ' . $s; }, $recentOpeningStems));
     $saturatedContext = worker_saturated_context($saturatedThreadPhrases);
     $crossBotRule = ($recentBotPosts !== array())
         ? 'Cross-bot novelty rule: avoid repeating the same core sentence or example from recent bot replies. Keep the intent, but add a distinct angle.'
@@ -4408,6 +4516,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $angleSeed = abs((int)crc32(strtolower($botUsername . '|' . $topicTitle . '|' . substr((string)$opRaw, 0, 180))));
     $distinctAngleRule = 'Distinct angle preference: ' . $angleModes[$angleSeed % count($angleModes)];
     $openingDiversityRule = worker_opening_diversity_rule($botUsername);
+    $crossThreadOpeningRule = 'Cross-thread opener rule (mandatory): do not start with an opener stem that appeared recently in other threads. Use a fresh first sentence pattern.';
     $antiAgreementRule = 'Agreement phrasing rule: never open with "Exactly", "100%", "Totally agree", "Totally,", "Totally —", or "Great point."';
     $expertiseScopeRule = worker_bot_expertise_scope_rule($botUsername);
     $cadenceMeta = worker_question_cadence_should_force_question($botUsername);
@@ -4584,7 +4693,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . $botToneRule . ' ' . $botRoleRule . ' If the topic asks a question, answer in the first clause, then add a brief qualifier. '
         . 'Never end on a dangling fragment; if you shorten, keep the thought complete. '
         . 'If listing 3 or more items, use markdown bullet points with one item per line. '
-        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $deeperResearchRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' Do not sign your post; the forum already shows your username.';
+        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $crossThreadOpeningRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $deeperResearchRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' Do not sign your post; the forum already shows your username.';
     $user = "Topic title: {$topicTitle}\n"
         . "OP username: @{$opUsername}\n"
         . "OP content:\n" . substr($opRaw, 0, 1200) . "\n\n"
@@ -4593,6 +4702,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . (trim((string)$recentThreadContext) !== '' ? ((string)$recentThreadContext . "\n\n") : '')
         . $recentBotContext . "\n\n"
         . $recentSameBotContext . "\n\n"
+        . "Recent cross-thread opening stems to avoid:\n" . $recentOpeningHints . "\n\n"
         . $saturatedContext . "\n\n"
         . $pollContextBlock . "\n\n"
         . "Before finalizing, read every existing response in the thread and identify one specific new detail to add. Do not summarize existing responses. Different words, same idea is not additive.\n\n"
@@ -4674,6 +4784,19 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 || $leadClone;
         }
         if ($looksMimic) {
+            return '';
+        }
+    }
+
+    $recentStemsForGate = worker_recent_opening_stems(worker_load_opening_memory(), 96, 24);
+    $replyStem = worker_opening_stem($txt);
+    if (worker_opening_stem_reused($replyStem, $recentStemsForGate)) {
+        $deMimic = worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $opRaw, $txt, (string)$recentThreadContext);
+        if ($deMimic !== '') {
+            $txt = $deMimic;
+            $replyStem = worker_opening_stem($txt);
+        }
+        if (worker_opening_stem_reused($replyStem, $recentStemsForGate)) {
             return '';
         }
     }
@@ -5077,13 +5200,17 @@ function worker_generate_minimal_fallback_reply($bot, $topicTitle, $targetUserna
     $model = worker_model_for_task($isTechnical ? 'reply_generation_technical' : 'reply_generation', array('technical' => $isTechnical));
     if (!is_string($model) || trim($model) === '' || KONVO_OPENAI_API_KEY === '') return '';
 
+    $recentOpeningHints = implode("\n", array_map(static function ($s) { return '- ' . $s; }, worker_recent_opening_stems(worker_load_opening_memory(), 96, 20)));
+    if (trim((string)$recentOpeningHints) === '') $recentOpeningHints = '(none)';
     $system = trim((string)$soul)
         . ' Write a short forum reply that adds one clear useful point.'
         . ' Keep it human, casual, and concise.'
         . ' Use 1-2 short sentences only, no headings, no bullets, no fluff, and no question marks.'
+        . ' Do not mimic or restate the opening phrase from the target post.'
+        . ' Do not start with any opener stem listed in the avoid-list.'
         . ' If technical, keep it precise and practical.'
         . ' Do not sign your post; the forum already shows your username.';
-    $user = "Topic title: {$topicTitle}\n\nTarget post by @{$targetUsername}:\n{$targetRaw}\n\nWrite the fallback reply now.";
+    $user = "Topic title: {$topicTitle}\n\nTarget post by @{$targetUsername}:\n{$targetRaw}\n\nAvoid these recent opener stems:\n{$recentOpeningHints}\n\nWrite the fallback reply now.";
     $res = post_json(
         'https://api.openai.com/v1/chat/completions',
         array(
@@ -5109,6 +5236,10 @@ function worker_generate_minimal_fallback_reply($bot, $topicTitle, $targetUserna
     $txt = worker_markdown_code_integrity_pass($txt);
     $txt = worker_normalize_code_fence_spacing($txt);
     $txt = worker_strip_foreign_bot_name_noise($txt, $botUsername);
+    $replyStem = worker_opening_stem($txt);
+    if (worker_opening_stem_reused($replyStem, worker_recent_opening_stems(worker_load_opening_memory(), 96, 20))) {
+        return '';
+    }
     $txt = normalize_signature($txt, $signature);
     return trim((string)$txt);
 }
@@ -5832,6 +5963,10 @@ if (!$postRes['ok']) {
 $postNumber = isset($postRes['body']['post_number']) ? (int)$postRes['body']['post_number'] : 1;
 $postUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
 worker_question_cadence_record_post((string)($bot['username'] ?? ''));
+$postedStem = worker_opening_stem((string)$replyText);
+if ($postedStem !== '') {
+    worker_remember_opening_stem($postedStem, (int)$topicId, (string)($bot['username'] ?? ''));
+}
 $seen[(string)$topicId] = time();
 save_seen_topics($seen);
 if ($consensusFlowActive) {

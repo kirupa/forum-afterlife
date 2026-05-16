@@ -199,6 +199,7 @@ function casual_save_recent_topics(array $items): void
             'title' => $title,
             'plan_angle' => $angle,
             'plan_lane' => $lane,
+            'raw' => trim((string)($item['raw'] ?? '')),
             'ts' => $ts,
         );
     }
@@ -211,16 +212,53 @@ function casual_save_recent_topics(array $items): void
     @file_put_contents(casual_state_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
-function casual_remember_topic(string $title, string $planAngle, string $planLane = ''): void
+function casual_remember_topic(string $title, string $planAngle, string $planLane = '', string $raw = ''): void
 {
     $items = casual_load_recent_topics();
     array_unshift($items, array(
         'title' => trim($title),
         'plan_angle' => trim($planAngle),
         'plan_lane' => trim($planLane),
+        'raw' => trim($raw),
         'ts' => time(),
     ));
     casual_save_recent_topics($items);
+}
+
+function casual_opening_stem(string $text): string
+{
+    $text = str_replace(array("\r\n", "\r"), "\n", (string)$text);
+    $first = trim((string)strtok($text, "\n"));
+    if ($first === '') return '';
+    $first = preg_replace('/https?:\/\/\S+/i', '', $first) ?? $first;
+    $first = strtolower($first);
+    $first = preg_replace('/[^a-z0-9\s]/i', ' ', $first) ?? $first;
+    $first = preg_replace('/\s+/', ' ', $first) ?? $first;
+    $first = trim((string)$first);
+    if ($first === '') return '';
+    $parts = explode(' ', $first);
+    if (count($parts) > 10) $parts = array_slice($parts, 0, 10);
+    return trim((string)implode(' ', $parts));
+}
+
+function casual_recent_opening_stems(array $recent, int $limit = 14): string
+{
+    $stems = array();
+    foreach ($recent as $item) {
+        if (!is_array($item)) continue;
+        $raw = trim((string)($item['raw'] ?? ''));
+        if ($raw === '') continue;
+        $stem = casual_opening_stem($raw);
+        if ($stem === '' || isset($stems[$stem])) continue;
+        $stems[$stem] = true;
+        if (count($stems) >= max(6, $limit)) break;
+    }
+    if ($stems === array()) return '(none)';
+    $lines = array();
+    foreach (array_keys($stems) as $s) {
+        $lines[] = '- ' . $s;
+    }
+    return implode("\n", $lines);
 }
 
 function casual_consensus_state_path(): string
@@ -1046,6 +1084,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         konvo_load_soul($soulKey, $soulFallback)
     );
     $recentHints = casual_recent_hint_lines($recent);
+    $recentOpeningHints = casual_recent_opening_stems($recent, 16);
 
     $strictLine = $strict
         ? 'Your previous draft was too close to a recent topic, too code-heavy, too shallow, or not thoughtful enough. Regenerate with a different angle and a stronger insight or tradeoff.'
@@ -1083,7 +1122,8 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'The final sentence MUST be one open discussion question ending with "?". '
         . 'No links, no hashtags, no code blocks. '
         . 'Do not sign the post; Discourse already shows the author username. '
-        . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording.';
+        . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording. '
+        . 'Opening-line diversity is mandatory: do not reuse the same opener pattern or phrase stem across threads.';
 
     $user = "Generate one new broad tech-culture discussion question now.\n"
         . "Desired domains across runs: video games, sci-fi framing, business impact, design impact, developer life, product/workflow tradeoffs.\n"
@@ -1092,6 +1132,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . "Lane focus constraint: {$laneFocusConstraint}\n"
         . "Set plan_lane to exactly this key: {$laneKey}\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
+        . "Recent opening stems to avoid reusing:\n{$recentOpeningHints}\n\n"
         . "Recent forum topics to avoid paraphrasing:\n{$forumRecentHints}\n\n"
         . $extraAvoidanceLine
         . $strictLine;
@@ -1378,7 +1419,7 @@ if (!$post['ok']) {
 $topicId = (int)($post['body']['topic_id'] ?? 0);
 $postNumber = (int)($post['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
-casual_remember_topic($title, (string)($plan['angle'] ?? ''), (string)($plan['lane'] ?? (string)($lane['key'] ?? '')));
+casual_remember_topic($title, (string)($plan['angle'] ?? ''), (string)($plan['lane'] ?? (string)($lane['key'] ?? '')), $raw);
 casual_consensus_register_topic($topicId, $bot, $title, $categoryId, $plan);
 $todayCountAfterPost = casual_daily_count_increment($today);
 
