@@ -1997,6 +1997,9 @@ if (KONVO_OPENAI_API_KEY === '') {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+$force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = !in_array($allowNewTopicsEnv, array('0', 'false', 'no', 'off'), true);
 $previewMode = (isset($_GET['preview']) && (string)$_GET['preview'] === '1')
     || (isset($_GET['preview_only']) && (string)$_GET['preview_only'] === '1');
 $confirmPost = (isset($_POST['confirm_post']) && (string)$_POST['confirm_post'] === '1')
@@ -2129,6 +2132,15 @@ if ($confirmPost) {
             'forced_gaming_author' => $forcedGamingAuthor,
             'category_decision' => $categoryDecision,
         ),
+    ));
+}
+
+if (!$allowNewTopics && !$force && !$previewMode && !$dryRun) {
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=0 to disable, or pass force=1 to override.',
     ));
 }
 
@@ -2294,6 +2306,15 @@ if ($dryRun) {
         ),
         'source_count' => count($feed_sources),
         'candidate_count' => count($candidates),
+    ));
+}
+
+if (!$allowNewTopics && !$force) {
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=0 to disable, or pass force=1 to override.',
     ));
 }
 
