@@ -519,11 +519,26 @@ function casual_title_terms(string $title): array
     if ($s === '') return array();
     $parts = preg_split('/\s+/', $s);
     if (!is_array($parts)) return array();
-    $stop = array('the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be', 'it', 'that', 'this', 'how', 'what', 'when', 'why', 'does', 'do', 'should', 'can', 'could');
+    $stop = array(
+        'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'on', 'with', 'is', 'are', 'be', 'it', 'that', 'this',
+        'how', 'what', 'when', 'why', 'does', 'do', 'should', 'can', 'could', 'would', 'will', 'you', 'your', 'our',
+        'my', 'we', 'they', 'them', 'their', 'me', 'i', 'at', 'by', 'from', 'as', 'if', 'than', 'then', 'vs', 'versus',
+        'make', 'makes', 'made', 'making', 'better', 'best', 'worse', 'worst', 'feel', 'feels', 'felt', 'more', 'less',
+        'really', 'just', 'still', 'very', 'much', 'too', 'about', 'around', 'into', 'out', 'over', 'under'
+    );
     $out = array();
     foreach ($parts as $p) {
         $p = trim((string)$p);
         if ($p === '' || strlen($p) < 3) continue;
+        if (str_ends_with($p, 'ies') && strlen($p) > 4) {
+            $p = substr($p, 0, -3) . 'y';
+        } elseif (str_ends_with($p, 'ing') && strlen($p) > 5) {
+            $p = substr($p, 0, -3);
+        } elseif (str_ends_with($p, 'ed') && strlen($p) > 4) {
+            $p = substr($p, 0, -2);
+        } elseif (str_ends_with($p, 's') && strlen($p) > 4 && !str_ends_with($p, 'ss')) {
+            $p = substr($p, 0, -1);
+        }
         if (in_array($p, $stop, true)) continue;
         $out[$p] = true;
     }
@@ -555,7 +570,59 @@ function casual_title_too_similar_to_recent(string $candidateTitle, array $recen
         if ($rt === '') continue;
         if (casual_normalized_title_key($rt) === $ck) return true;
         $sim = casual_title_similarity_score($candidateTitle, $rt);
-        if ($sim >= 0.64) return true;
+        if ($sim >= 0.58) return true;
+        $candTerms = casual_title_terms($candidateTitle);
+        $rtTerms = casual_title_terms($rt);
+        if ($candTerms !== array() && $rtTerms !== array()) {
+            $setA = array_fill_keys($candTerms, true);
+            $overlap = 0;
+            foreach ($rtTerms as $tok) {
+                if (isset($setA[$tok])) $overlap++;
+            }
+            // Catch "different wording, same core topic" pairs like tutorials+games.
+            if ($overlap >= 2 && $sim >= 0.36) return true;
+        }
+    }
+    return false;
+}
+
+function casual_topic_text_terms(string $title, string $raw = ''): array
+{
+    $blob = trim($title . "\n" . $raw);
+    if ($blob === '') return array();
+    $blob = preg_replace('/```[\s\S]*?```/m', ' ', (string)$blob) ?? $blob;
+    $blob = preg_replace('/https?:\/\/\S+/i', ' ', (string)$blob) ?? $blob;
+    $blob = preg_replace('/[^a-z0-9\s]/i', ' ', strtolower((string)$blob)) ?? strtolower((string)$blob);
+    $blob = preg_replace('/\s+/', ' ', (string)$blob) ?? $blob;
+    return casual_title_terms($blob);
+}
+
+function casual_semantic_similarity(string $titleA, string $rawA, string $titleB, string $rawB = ''): float
+{
+    $a = casual_topic_text_terms($titleA, $rawA);
+    $b = casual_topic_text_terms($titleB, $rawB);
+    if ($a === array() || $b === array()) return 0.0;
+    $setA = array_fill_keys($a, true);
+    $setB = array_fill_keys($b, true);
+    $inter = 0;
+    foreach ($setA as $k => $_) {
+        if (isset($setB[$k])) $inter++;
+    }
+    $union = count($setA) + count($setB) - $inter;
+    if ($union <= 0) return 0.0;
+    return (float)$inter / (float)$union;
+}
+
+function casual_candidate_too_close_to_recent_local(string $candidateTitle, string $candidateRaw, array $recentLocal): bool
+{
+    foreach ($recentLocal as $item) {
+        if (!is_array($item)) continue;
+        $rt = trim((string)($item['title'] ?? ''));
+        if ($rt === '') continue;
+        $rr = trim((string)($item['raw'] ?? ''));
+        $sim = casual_semantic_similarity($candidateTitle, $candidateRaw, $rt, $rr);
+        if ($sim >= 0.41) return true;
+        if (casual_title_too_similar_to_recent($candidateTitle, array($rt))) return true;
     }
     return false;
 }
@@ -736,7 +803,7 @@ function casual_normalize_title(string $title): string
     }
     $title = preg_replace('/[:;,\.\-]+$/', '', $title) ?? $title;
     $title = trim($title);
-    return casual_ensure_question_mark_title($title);
+    return $title;
 }
 
 function casual_normalize_signature(string $text, string $signature): string
@@ -905,12 +972,7 @@ function casual_validate_generated_topic(string $title, string $raw): array
     if (casual_looks_too_technical($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic looked too technical');
     }
-    if (!casual_title_looks_question_like($title) || !str_ends_with($title, '?')) {
-        return array('ok' => false, 'error' => 'title must be an open question');
-    }
-    if (!str_contains($raw, '?')) {
-        return array('ok' => false, 'error' => 'body must include an open question');
-    }
+    // Title can be a statement; body may include a question, but it is not mandatory.
     if (!casual_is_allowed_topic_scope($title . "\n" . $raw)) {
         return array('ok' => false, 'error' => 'topic must stay within tech/design/gaming/business/dev-culture scope');
     }
@@ -1075,6 +1137,69 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
     );
 }
 
+function casual_seed_topic_pool(): array
+{
+    return array(
+        'game tutorials vs discovery',
+        'retro game difficulty and modern expectations',
+        'sci-fi computer assistants vs real AI tools',
+        'shipping speed vs code quality',
+        'design polish vs product momentum',
+        'remote work rituals for deep focus',
+        'feature creep vs simplicity',
+        'creator tools that remove too much friction',
+        'automation convenience vs skill atrophy',
+        'team ownership vs platform standardization',
+        'ui clarity vs playful ambiguity',
+        'onboarding speed vs long-term mastery',
+        'engineering culture and review quality',
+        'product metrics vs user delight',
+        'ai copilots and developer confidence',
+        'small-batch software vs giant all-in-one apps',
+        'creative flow interruptions from notifications',
+        'debugging habits that actually scale',
+        'indie game design tradeoffs',
+        'animation polish vs performance budgets',
+        'community trust and transparent product decisions',
+        'open-source dependency risk vs shipping pressure',
+        'toolchain churn and developer fatigue',
+        'healthy defaults vs user control',
+        'personal productivity systems that stick',
+    );
+}
+
+function casual_pick_random_seed_topic(array $recentLocal, array $recentForumTitles): string
+{
+    $pool = casual_seed_topic_pool();
+    $recentTitles = array();
+    foreach ($recentLocal as $item) {
+        if (!is_array($item)) continue;
+        $t = trim((string)($item['title'] ?? ''));
+        if ($t !== '') $recentTitles[] = $t;
+    }
+    foreach ($recentForumTitles as $t) {
+        $t = trim((string)$t);
+        if ($t !== '') $recentTitles[] = $t;
+        if (count($recentTitles) >= 80) break;
+    }
+    $candidates = array();
+    foreach ($pool as $seed) {
+        $seed = trim((string)$seed);
+        if ($seed === '') continue;
+        $tooClose = false;
+        foreach ($recentTitles as $rt) {
+            if (casual_title_too_similar_to_recent($seed, array($rt))) {
+                $tooClose = true;
+                break;
+            }
+        }
+        if (!$tooClose) $candidates[] = $seed;
+    }
+    if ($candidates === array()) $candidates = $pool;
+    shuffle($candidates);
+    return (string)$candidates[0];
+}
+
 function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = '', array $lane = array()): array
 {
     $botName = trim((string)($bot['name'] ?? 'BayMax'));
@@ -1084,58 +1209,31 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         konvo_load_soul($soulKey, $soulFallback)
     );
     $recentHints = casual_recent_hint_lines($recent);
-    $recentOpeningHints = casual_recent_opening_stems($recent, 16);
-
-    $strictLine = $strict
-        ? 'Your previous draft was too close to a recent topic, too code-heavy, too shallow, or not thoughtful enough. Regenerate with a different angle and a stronger insight or tradeoff.'
-        : 'Generate the best first draft now.';
-
-    $forumRecentLines = array();
-    $maxForum = min(26, count($recentForumTitles));
-    for ($i = 0; $i < $maxForum; $i++) {
-        $t = trim((string)($recentForumTitles[$i] ?? ''));
-        if ($t === '') continue;
-        $forumRecentLines[] = '- ' . $t;
-    }
-    $forumRecentHints = $forumRecentLines === array() ? '(none)' : implode("\n", $forumRecentLines);
-
-    $extraAvoidance = trim($extraAvoidance);
-    $extraAvoidanceLine = $extraAvoidance !== '' ? ("Special avoidance instruction:\n" . $extraAvoidance . "\n\n") : '';
-    $laneLabel = trim((string)($lane['label'] ?? 'broad technology tradeoffs'));
-    $laneGuidance = trim((string)($lane['guidance'] ?? ''));
-    $laneKey = trim((string)($lane['key'] ?? 'general'));
-    $laneFocusConstraint = ($laneKey !== 'sci_fi_ai')
-        ? 'For this lane, do not make AI/LLM the central subject. You may mention AI only as a secondary example. Prefer a non-AI title.'
-        : 'For this lane, sci-fi + AI framing is allowed and expected.';
+    $recentOpeningHints = casual_recent_opening_stems($recent, 14);
+    $seedTopic = casual_pick_random_seed_topic($recent, $recentForumTitles);
 
     $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
-        . 'You generate a single open-question forum topic starter for humans. '
+        . 'You generate a single casual forum discussion starter for humans. '
         . 'Return ONLY JSON with this schema: '
         . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
-        . 'Rules: topic must be within technology culture broadly: software, games, design, business impact, developer life, product workflows, or science-fiction framing tied to modern tech. '
-        . 'Do not produce architecture showcase chatter, link shares, GIF posts, product launch reposts, or news summaries. '
-        . 'Anchor the topic around one practical tension or tradeoff and ask for lived experience from others. '
-        . 'Avoid coding help requests, implementation details, politics, religion, rage bait, tragedy, and empty hot takes. '
-        . 'Use natural human language, concise and reflective. '
-        . 'Title: 6-13 words, complete thought, must end with a question mark, no colon, no clickbait, no emoji. '
-        . 'Body: 2-4 short sentences max split into 2 short paragraphs. '
-        . 'The final sentence MUST be one open discussion question ending with "?". '
+        . 'Rules: turn the seed topic into one concrete observation and invite discussion naturally. '
+        . 'Avoid politics, violence, tragedy, culture-war bait, link dumps, and coding help requests. '
+        . 'Use natural human language that sounds like a real forum member. '
+        . 'Title: 6-13 words, complete thought, statement style by default, no colon, no clickbait, no emoji. '
+        . 'Body: 2-3 short sentences, max 2 short paragraphs. '
+        . 'One question in the body is allowed when useful, but do not force one every time. '
         . 'No links, no hashtags, no code blocks. '
         . 'Do not sign the post; Discourse already shows the author username. '
-        . 'Uniqueness is mandatory: make this drastically different from recent topics in angle, tension, and wording. '
-        . 'Opening-line diversity is mandatory: do not reuse the same opener pattern or phrase stem across threads.';
+        . 'Uniqueness is mandatory: do not paraphrase recent topics.';
 
-    $user = "Generate one new broad tech-culture discussion question now.\n"
-        . "Desired domains across runs: video games, sci-fi framing, business impact, design impact, developer life, product/workflow tradeoffs.\n"
-        . "Primary lane for THIS run: {$laneLabel}\n"
-        . ($laneGuidance !== '' ? ("Lane guidance: {$laneGuidance}\n") : '')
-        . "Lane focus constraint: {$laneFocusConstraint}\n"
-        . "Set plan_lane to exactly this key: {$laneKey}\n"
+    $user = "Seed topic: {$seedTopic}\n"
+        . "Generate one post from this seed as an observation-first discussion starter.\n"
+        . "Set plan_lane to a short lane label that best fits this seed.\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
         . "Recent opening stems to avoid reusing:\n{$recentOpeningHints}\n\n"
-        . "Recent forum topics to avoid paraphrasing:\n{$forumRecentHints}\n\n"
-        . $extraAvoidanceLine
-        . $strictLine;
+        . ($strict ? "This is a regeneration attempt. Pick a clearly different angle than prior drafts.\n" : '')
+        . ($extraAvoidance !== '' ? ("Avoidance hint: " . trim($extraAvoidance) . "\n") : '')
+        . "Return JSON only.";
 
     $payload = array(
         'model' => konvo_model_for_task('casual_topic'),
@@ -1187,6 +1285,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
             'angle' => $planAngle,
             'posting_intent' => $planIntent,
             'lane' => $planLane,
+            'seed_topic' => $seedTopic,
         ),
     );
 }
