@@ -1233,9 +1233,14 @@ function konvo_generate_digest_title_with_llm($items)
     }
     if ($headlines === array()) return array('ok' => false, 'error' => 'no titles');
 
+    $datePrefix = konvo_news_digest_display_date();
+    $prefixLen = strlen($datePrefix) + 1; // trailing space
+    $baseMaxChars = max(24, ((int)KONVO_TITLE_MAX_CHARS) - $prefixLen);
+
     $system = 'Write one concise forum title for a daily tech-news roundup post. '
         . 'Return ONLY JSON: {"title":"..."}. '
-        . 'Rules: complete thought, statement style, 6-12 words, <= ' . KONVO_TITLE_MAX_CHARS . ' chars, no colon, no emoji, no quotes, no question mark. '
+        . 'Rules: complete thought, statement style, 5-11 words, <= ' . $baseMaxChars . ' chars, no colon, no emoji, no quotes, no question mark. '
+        . 'Do not include a date prefix; date is added separately. '
         . 'Do not copy any single headline verbatim.';
     $user = "Top headlines today:\n" . implode("\n", $headlines) . "\n\nGenerate the roundup title now.";
     $payload = array(
@@ -1273,16 +1278,36 @@ function konvo_generate_digest_title_with_llm($items)
         $obj = json_decode(substr($content, $start, $end - $start + 1), true);
     }
     $title = is_array($obj) ? trim((string)($obj['title'] ?? '')) : trim((string)strtok($content, "\n"));
-    $title = konvo_clean_generated_title($title);
-    $title = preg_replace('/\?+$/', '', (string)$title) ?? $title;
-    $title = trim((string)$title);
-    $title = preg_replace('/[:;,\.\-]+$/', '', (string)$title) ?? $title;
-    $title = trim((string)$title);
+    $title = konvo_news_digest_title_with_date($title);
     $errMsg = '';
     if ($title === '' || !konvo_validate_forum_title_candidate($title, $errMsg)) {
         return array('ok' => false, 'error' => $errMsg !== '' ? $errMsg : 'invalid digest title', 'status' => $status);
     }
     return array('ok' => true, 'title' => $title, 'status' => $status);
+}
+
+function konvo_news_digest_title_with_date($title)
+{
+    $date = konvo_news_digest_display_date();
+    $base = konvo_clean_generated_title((string)$title);
+    $base = preg_replace('/^\d{1,2}\/\d{1,2}\/\d{2}\s*/', '', (string)$base) ?? $base;
+    $base = preg_replace('/\?+$/', '', (string)$base) ?? $base;
+    $base = preg_replace('/[:;,\.\-]+$/', '', (string)$base) ?? $base;
+    $base = trim((string)$base);
+    if ($base === '') $base = 'tech stories worth your attention';
+
+    $prefix = $date . ' ';
+    $max = (int)KONVO_TITLE_MAX_CHARS;
+    if ($max < 40) $max = 85;
+    $allowed = $max - strlen($prefix);
+    if ($allowed < 16) $allowed = 16;
+    if (strlen($base) > $allowed) {
+        $short = trim((string)substr($base, 0, $allowed));
+        $lastSpace = strrpos($short, ' ');
+        if ($lastSpace !== false && $lastSpace > 10) $short = trim((string)substr($short, 0, $lastSpace));
+        $base = rtrim((string)$short, " .,:;!?-");
+    }
+    return trim($prefix . $base);
 }
 
 function konvo_clean_generated_summary($text)
@@ -2492,13 +2517,12 @@ shuffle($bots);
 $bot = $bots[0];
 $titleRes = konvo_generate_digest_title_with_llm($digestItems);
 if (!is_array($titleRes) || empty($titleRes['ok']) || !isset($titleRes['title'])) {
-    $fallbackTitle = 'Today\'s tech stories worth your attention';
+    $fallbackTitle = konvo_news_digest_title_with_date('tech stories worth your attention');
     $titleRes = array('ok' => true, 'title' => $fallbackTitle);
 }
 $topicTitle = trim((string)$titleRes['title']);
-$topicTitle = preg_replace('/\?+$/', '', (string)$topicTitle) ?? $topicTitle;
-$topicTitle = trim((string)$topicTitle);
-if ($topicTitle === '') $topicTitle = 'Today\'s tech stories worth your attention';
+$topicTitle = konvo_news_digest_title_with_date($topicTitle);
+if ($topicTitle === '') $topicTitle = konvo_news_digest_title_with_date('tech stories worth your attention');
 
 $topicRaw = konvo_compose_digest_body($bot, $digestItems);
 if (trim((string)$topicRaw) === '') {
