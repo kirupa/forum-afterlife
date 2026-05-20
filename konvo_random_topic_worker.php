@@ -212,6 +212,17 @@ function konvo_news_digest_display_date()
     return $now->format('n/j/y');
 }
 
+function konvo_news_digest_title_date()
+{
+    try {
+        $tz = new DateTimeZone((string)KONVO_NEWS_DIGEST_TZ);
+    } catch (Throwable $e) {
+        $tz = new DateTimeZone('America/Los_Angeles');
+    }
+    $now = new DateTimeImmutable('now', $tz);
+    return $now->format('n-j-y');
+}
+
 function konvo_news_digest_load_state()
 {
     $path = konvo_news_digest_state_path();
@@ -1288,9 +1299,13 @@ function konvo_generate_digest_title_with_llm($items)
 
 function konvo_news_digest_title_with_date($title)
 {
-    $date = konvo_news_digest_display_date();
+    $date = konvo_news_digest_title_date();
     $base = konvo_clean_generated_title((string)$title);
-    $base = preg_replace('/^\d{1,2}\/\d{1,2}\/\d{2}\s*/', '', (string)$base) ?? $base;
+    for ($i = 0; $i < 4; $i++) {
+        $next = preg_replace('/^\d{1,2}[\/-]\d{1,2}[\/-]\d{2}\s*/', '', (string)$base) ?? $base;
+        if ($next === $base) break;
+        $base = ltrim((string)$next);
+    }
     $base = preg_replace('/\?+$/', '', (string)$base) ?? $base;
     $base = preg_replace('/[:;,\.\-]+$/', '', (string)$base) ?? $base;
     $base = trim((string)$base);
