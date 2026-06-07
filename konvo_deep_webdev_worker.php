@@ -774,7 +774,7 @@ function deep_bot_question_persona($bot)
     return isset($map[$u]) ? $map[$u] : $map['baymax'];
 }
 
-function deep_generate_single_live_question($forumRecentTitles, $recentQuestionTitles, $preferCoding = true, $bot = array())
+function deep_generate_single_live_question($forumRecentTitles, $recentQuestionTitles, $preferCoding = true, $bot = array(), $shapeOverride = '')
 {
     if (KONVO_OPENAI_API_KEY === '') {
         return array('ok' => false, 'error' => 'OPENAI_API_KEY missing', 'meta' => array());
@@ -782,7 +782,14 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
 
     $recent = deep_recent_titles_for_prompt($forumRecentTitles, $recentQuestionTitles, 28);
     $mode = $preferCoding ? 'coding' : 'conceptual';
-    $codingShape = ($preferCoding && mt_rand(1, 100) <= 24) ? 'snippet_share' : 'question';
+    $shapeOverride = strtolower(trim((string)$shapeOverride));
+    if (!in_array($shapeOverride, array('snippet_share', 'question'), true)) {
+        $shapeOverride = '';
+    }
+    $codingShape = 'question';
+    if ($preferCoding) {
+        $codingShape = ($shapeOverride !== '') ? $shapeOverride : ((mt_rand(1, 100) <= 24) ? 'snippet_share' : 'question');
+    }
     $wantedType = $preferCoding ? ($codingShape === 'snippet_share' ? 'snippet_share' : 'easy_code') : 'deep';
     $botUsername = trim((string)($bot['username'] ?? 'BayMax'));
     $botPersona = deep_bot_question_persona($bot);
@@ -1890,6 +1897,7 @@ if (KONVO_API_KEY === '') {
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
 $force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$shapeOverride = trim((string)($_GET['shape'] ?? ''));
 $allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
 $allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
 
@@ -1914,11 +1922,14 @@ $keywordStats = array(
 $recentForumTitlesForLlm = recent_forum_titles(180);
 $recentQuestionTitlesForLlm = load_recent_questions();
 $preferCoding = (mt_rand(1, 100) <= 80);
-$liveGen = deep_generate_single_live_question($recentForumTitlesForLlm, $recentQuestionTitlesForLlm, $preferCoding, $bot);
+if (in_array(strtolower($shapeOverride), array('snippet_share', 'question'), true)) {
+    $preferCoding = true;
+}
+$liveGen = deep_generate_single_live_question($recentForumTitlesForLlm, $recentQuestionTitlesForLlm, $preferCoding, $bot, $shapeOverride);
 $retryAttempted = false;
 if (empty($liveGen['ok']) && $preferCoding) {
     $retryAttempted = true;
-    $liveGen = deep_generate_single_live_question($recentForumTitlesForLlm, $recentQuestionTitlesForLlm, false, $bot);
+    $liveGen = deep_generate_single_live_question($recentForumTitlesForLlm, $recentQuestionTitlesForLlm, false, $bot, '');
 }
 if (empty($liveGen['ok'])) {
     out_json(503, array(
