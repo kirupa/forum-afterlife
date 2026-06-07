@@ -251,6 +251,64 @@ function deep_pick_prompt_domain($recentTitles, $allowPixelArt = false)
     return $candidates[mt_rand(0, count($candidates) - 1)];
 }
 
+function deep_snippet_share_catalog()
+{
+    return array(
+        array('key' => 'canvas', 'label' => 'canvas drawing and visual toys', 'keywords' => array('canvas', '2d drawing', 'particles', 'pixels', 'sparkline', 'trail')),
+        array('key' => 'dom', 'label' => 'dom interactions and browser behavior', 'keywords' => array('dom', 'querySelector', 'classList', 'dataset', 'focus', 'selection')),
+        array('key' => 'color', 'label' => 'color utilities and ui theming', 'keywords' => array('color', 'hsl', 'palette', 'gradient', 'contrast', 'theme')),
+        array('key' => 'animation', 'label' => 'animation and motion details', 'keywords' => array('animation', 'requestAnimationFrame', 'easing', 'spring', 'transition', 'stagger')),
+        array('key' => 'layout', 'label' => 'layout and responsive ui behavior', 'keywords' => array('grid', 'flex', 'layout', 'responsive', 'cards', 'overflow')),
+        array('key' => 'text', 'label' => 'text polish and tiny formatting tricks', 'keywords' => array('text', 'string', 'wrapping', 'truncate', 'highlight', 'typography')),
+        array('key' => 'forms', 'label' => 'forms and input polish', 'keywords' => array('form', 'input', 'range', 'validation', 'mask', 'placeholder')),
+        array('key' => 'scroll', 'label' => 'scroll and viewport effects', 'keywords' => array('scroll', 'intersection observer', 'sticky', 'parallax', 'viewport', 'reveal')),
+        array('key' => 'utility', 'label' => 'small browser utilities and ui conveniences', 'keywords' => array('clipboard', 'copy', 'download', 'resize', 'share', 'theme toggle')),
+    );
+}
+
+function deep_snippet_focus_blob($focus)
+{
+    if (!is_array($focus)) return '';
+    $parts = array();
+    $label = trim((string)($focus['label'] ?? ''));
+    if ($label !== '') $parts[] = strtolower($label);
+    $keywords = isset($focus['keywords']) && is_array($focus['keywords']) ? $focus['keywords'] : array();
+    foreach ($keywords as $kw) {
+        $s = strtolower(trim((string)$kw));
+        if ($s !== '') $parts[] = $s;
+    }
+    return implode(' ', $parts);
+}
+
+function deep_pick_snippet_share_focus($recentTitles)
+{
+    $catalog = deep_snippet_share_catalog();
+    if ($catalog === array()) {
+        return array('key' => 'dom', 'label' => 'dom interactions and browser behavior', 'keywords' => array('dom'));
+    }
+
+    $recentBlob = strtolower(implode("\n", array_map('strval', is_array($recentTitles) ? $recentTitles : array())));
+    $unused = array();
+    foreach ($catalog as $focus) {
+        $blob = deep_snippet_focus_blob($focus);
+        $hit = ($blob !== '' && strpos($recentBlob, $blob) !== false);
+        if (!$hit) {
+            $keywords = isset($focus['keywords']) && is_array($focus['keywords']) ? $focus['keywords'] : array();
+            foreach ($keywords as $kw) {
+                $needle = strtolower(trim((string)$kw));
+                if ($needle !== '' && strpos($recentBlob, $needle) !== false) {
+                    $hit = true;
+                    break;
+                }
+            }
+        }
+        if (!$hit) $unused[] = $focus;
+    }
+
+    $pool = $unused !== array() ? $unused : $catalog;
+    return $pool[mt_rand(0, count($pool) - 1)];
+}
+
 function deep_domain_matches_text($domain, $text)
 {
     if (!is_array($domain)) return false;
@@ -734,6 +792,14 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
     $selectedDomainLabel = trim((string)($selectedDomain['label'] ?? 'frontend architecture and execution'));
     $keywordBlock = deep_keywords_block_for_prompt($preferCoding, $animationPixelFocus);
     $avoidMotifs = deep_avoid_motifs_block();
+    $snippetFocus = ($codingShape === 'snippet_share') ? deep_pick_snippet_share_focus($recent) : null;
+    $snippetFocusLabel = trim((string)($snippetFocus['label'] ?? ''));
+    $snippetFocusKeywords = '';
+    if (is_array($snippetFocus)) {
+        $snippetFocusKeywords = implode(', ', array_values(array_filter(array_map('trim', (array)($snippetFocus['keywords'] ?? array())), function ($v) {
+            return $v !== '';
+        })));
+    }
 
     $system = "You are writing a NEW forum topic question for Kirupa Forum.\n\n"
         . "Goal:\n"
@@ -770,7 +836,9 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
         . "- Mention one concrete tradeoff or failure mode.\n"
         . "- Use plain language; avoid academic phrasing and buzzword stacking.\n"
         . "- Ask one strong question only when the shape is a question.\n"
-        . "- For snippet_share, prefer fun frontend/UI examples: color, animation, hover effects, DOM tricks, layout details, text/UI polish, or tiny browser utilities.\n\n"
+        . "- For snippet_share, make it feel fun, visual, or neat, not like a bug report.\n"
+        . "- For snippet_share, rotate broadly across canvas, DOM, color, animation, layout, text polish, forms, scroll behavior, and small browser utilities.\n"
+        . "- Avoid repeating the same snippet family too often; variety matters.\n\n"
         . "Bot personality layer (required):\n"
         . "BOT_USERNAME: {$botUsername}\n"
         . "BOT_PERSONA: {$botPersona}\n"
@@ -790,6 +858,8 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
             . "DIFFICULTY: " . ($preferCoding ? 'medium' : 'deep') . "\n\n"
             . "Additional constraints:\n"
             . ($preferCoding ? "- Coding shape for this run: {$codingShape}.\n" : '')
+            . (($codingShape === 'snippet_share' && $snippetFocusLabel !== '') ? "- Snippet-share focus for this run: {$snippetFocusLabel}.\n" : '')
+            . (($codingShape === 'snippet_share' && $snippetFocusKeywords !== '') ? "- Snippet-share keywords for this run: {$snippetFocusKeywords}.\n" : '')
             . "- Hard avoid repeated motifs: {$avoidMotifs}.\n"
             . "- Use the keyword guidance below as inspiration. Do not copy a full phrase verbatim as the title.\n"
             . "- Use diverse domains across programming, algorithms, data structures, system design, product management, accessibility, performance, tooling, testing, APIs, state, security, and deployment.\n"
@@ -855,6 +925,7 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
             'question' => $san,
             'mode' => $mode,
             'coding_shape' => $codingShape,
+            'snippet_focus' => is_array($snippetFocus) ? (string)($snippetFocus['key'] ?? '') : '',
             'domain_key' => (string)($selectedDomain['key'] ?? ''),
             'domain_label' => $selectedDomainLabel,
             'animation_pixelart_focus' => $animationPixelFocus,
