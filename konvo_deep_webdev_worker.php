@@ -143,10 +143,11 @@ function deep_keywords_for_prompt($preferCoding, $animationPixelFocus)
         );
     }
 
+    // Keep animation/pixel-art as an occasional spice, not the default theme.
     if ($animationPixelFocus) {
-        $out = array_merge($out, deep_keywords_take($m['animation_pixelart'] ?? array(), 6));
-    } else {
-        $out = array_merge($out, deep_keywords_take($m['animation_pixelart'] ?? array(), 3));
+        $out = array_merge($out, deep_keywords_take($m['animation_pixelart'] ?? array(), 2));
+    } elseif (mt_rand(1, 100) <= 20) {
+        $out = array_merge($out, deep_keywords_take($m['animation_pixelart'] ?? array(), 1));
     }
 
     $out = array_values(array_unique(array_filter(array_map('trim', $out), function ($v) {
@@ -171,6 +172,91 @@ function deep_avoid_motifs_block()
     }));
     if ($avoid === array()) return '(none)';
     return implode(', ', $avoid);
+}
+
+function deep_domain_catalog()
+{
+    return array(
+        array('key' => 'state', 'label' => 'state architecture and ownership', 'pattern' => '/\b(state|store|context|reducer|zustand|redux|atom|signal)\b/i'),
+        array('key' => 'rendering', 'label' => 'render pipeline and layout stability', 'pattern' => '/\b(render|reflow|repaint|layout thrash|paint|compositor|layer)\b/i'),
+        array('key' => 'events', 'label' => 'dom events and input handling', 'pattern' => '/\b(event|listener|pointer|keyboard|click|scroll|input|focus|blur)\b/i'),
+        array('key' => 'network', 'label' => 'api/network behavior and caching', 'pattern' => '/\b(api|fetch|http|retry|cache|etag|cdn|graphql|rest|websocket)\b/i'),
+        array('key' => 'forms', 'label' => 'forms and validation behavior', 'pattern' => '/\b(form|validation|field|schema|submit|dirty|touched)\b/i'),
+        array('key' => 'a11y', 'label' => 'accessibility and assistive technology behavior', 'pattern' => '/\b(a11y|accessibility|aria|screen reader|tabindex|focus trap)\b/i'),
+        array('key' => 'security', 'label' => 'frontend security boundaries', 'pattern' => '/\b(csp|xss|csrf|token|auth|session|sanitize|origin)\b/i'),
+        array('key' => 'testing', 'label' => 'testing strategy and reliability', 'pattern' => '/\b(test|jest|vitest|playwright|cypress|flaky|mock|fixture)\b/i'),
+        array('key' => 'bundling', 'label' => 'bundling, build, and dependency control', 'pattern' => '/\b(bundle|chunk|tree shaking|vite|webpack|rspack|rollup|dependency)\b/i'),
+        array('key' => 'ssr_hydration', 'label' => 'ssr, hydration, and edge rendering', 'pattern' => '/\b(ssr|hydration|server component|island|edge runtime|streaming)\b/i'),
+        array('key' => 'workers', 'label' => 'web workers and concurrency boundaries', 'pattern' => '/\b(web worker|worker|shared worker|offscreen canvas|messagechannel)\b/i'),
+        array('key' => 'css', 'label' => 'css architecture and component styling', 'pattern' => '/\b(css|container query|media query|specificity|cascade|scope|tailwind)\b/i'),
+        array('key' => 'algorithms', 'label' => 'algorithms and complexity tradeoffs', 'pattern' => '/\b(algorithm|complexity|big o|graph|bfs|dfs|dijkstra|greedy|dp)\b/i'),
+        array('key' => 'data_structures', 'label' => 'data structures and mutation strategy', 'pattern' => '/\b(data structure|map|set|heap|trie|queue|stack|linked list|tree)\b/i'),
+        array('key' => 'product', 'label' => 'product tradeoffs in engineering decisions', 'pattern' => '/\b(product|metric|kpi|north star|adoption|onboarding|retention|experiment)\b/i'),
+        array('key' => 'animation_pixelart', 'label' => 'animation and pixel-art rendering', 'pattern' => '/\b(animation|pixel art|pixelart|sprite|tilemap|game loop|canvas|webgl|shader)\b/i'),
+    );
+}
+
+function deep_pick_prompt_domain($recentTitles, $allowPixelArt = false)
+{
+    $catalog = deep_domain_catalog();
+    $recentDomainHistory = load_recent_domains();
+    $historySet = array();
+    $historyWindow = 8;
+    $historyCount = 0;
+    foreach ($recentDomainHistory as $dk) {
+        if ($historyCount >= $historyWindow) break;
+        $dks = strtolower(trim((string)$dk));
+        if ($dks === '') continue;
+        $historySet[$dks] = true;
+        $historyCount++;
+    }
+    $saturated = array();
+    if (is_array($recentTitles)) {
+        foreach ($recentTitles as $title) {
+            $blob = (string)$title;
+            foreach ($catalog as $domain) {
+                $key = (string)($domain['key'] ?? '');
+                $pattern = (string)($domain['pattern'] ?? '');
+                if ($key === '' || $pattern === '') continue;
+                if (preg_match($pattern, $blob)) {
+                    $saturated[$key] = true;
+                }
+            }
+        }
+    }
+
+    $candidates = array();
+    foreach ($catalog as $domain) {
+        $key = (string)($domain['key'] ?? '');
+        if ($key === 'animation_pixelart' && !$allowPixelArt) continue;
+        if (!isset($saturated[$key]) && !isset($historySet[strtolower($key)])) $candidates[] = $domain;
+    }
+    if ($candidates === array()) {
+        foreach ($catalog as $domain) {
+            $key = (string)($domain['key'] ?? '');
+            if ($key === 'animation_pixelart' && !$allowPixelArt) continue;
+            if (!isset($saturated[$key])) $candidates[] = $domain;
+        }
+    }
+    if ($candidates === array()) {
+        foreach ($catalog as $domain) {
+            $key = (string)($domain['key'] ?? '');
+            if ($key === 'animation_pixelart' && !$allowPixelArt) continue;
+            $candidates[] = $domain;
+        }
+    }
+    if ($candidates === array()) {
+        return array('key' => 'state', 'label' => 'state architecture and ownership');
+    }
+    return $candidates[mt_rand(0, count($candidates) - 1)];
+}
+
+function deep_domain_matches_text($domain, $text)
+{
+    if (!is_array($domain)) return false;
+    $pattern = (string)($domain['pattern'] ?? '');
+    if ($pattern === '') return false;
+    return (bool)preg_match($pattern, (string)$text);
 }
 function recent_questions_path()
 {
@@ -220,6 +306,47 @@ function recent_families_path()
         @mkdir($dir, 0775, true);
     }
     return $dir . '/deep_question_recent_families.json';
+}
+
+function recent_domains_path()
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir . '/deep_question_recent_domains.json';
+}
+
+function load_recent_domains()
+{
+    $path = recent_domains_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function save_recent_domains($items)
+{
+    if (!is_array($items)) return;
+    $clean = array();
+    foreach ($items as $v) {
+        $s = strtolower(trim((string)$v));
+        if ($s === '') continue;
+        if (!in_array($s, $clean, true)) $clean[] = $s;
+    }
+    $clean = array_slice($clean, 0, 24);
+    @file_put_contents(recent_domains_path(), json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function remember_question_domain($domainKey)
+{
+    $key = strtolower(trim((string)$domainKey));
+    if ($key === '') return;
+    $recent = load_recent_domains();
+    array_unshift($recent, $key);
+    save_recent_domains($recent);
 }
 
 function load_recent_families()
@@ -596,12 +723,15 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
     }
 
     $recent = deep_recent_titles_for_prompt($forumRecentTitles, $recentQuestionTitles, 28);
-    $recentBlock = $recent === array() ? '(none)' : implode("\n- ", array_merge(array(''), $recent));
     $mode = $preferCoding ? 'coding' : 'conceptual';
-    $wantedType = $preferCoding ? 'easy_code' : 'deep';
+    $codingShape = ($preferCoding && mt_rand(1, 100) <= 24) ? 'snippet_share' : 'question';
+    $wantedType = $preferCoding ? ($codingShape === 'snippet_share' ? 'snippet_share' : 'easy_code') : 'deep';
     $botUsername = trim((string)($bot['username'] ?? 'BayMax'));
     $botPersona = deep_bot_question_persona($bot);
-    $animationPixelFocus = (mt_rand(1, 100) <= 35);
+    // Pixel-art should be rare in the rotation.
+    $animationPixelFocus = (mt_rand(1, 100) <= 8);
+    $selectedDomain = deep_pick_prompt_domain($recent, $animationPixelFocus);
+    $selectedDomainLabel = trim((string)($selectedDomain['label'] ?? 'frontend architecture and execution'));
     $keywordBlock = deep_keywords_block_for_prompt($preferCoding, $animationPixelFocus);
     $avoidMotifs = deep_avoid_motifs_block();
 
@@ -621,14 +751,17 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
         . "2) Start paragraph 1 with a greeting integrated into the same sentence as personal context (example shape: \"What's up everyone? I'm...\").\n"
         . "3) Paragraph 1 must include first-person context (\"I'm trying to...\", \"I'm working on...\").\n"
         . "4) For conceptual mode: write exactly 2 short paragraphs with one blank line between them.\n"
-        . "5) For coding mode: write 3 blocks in this order with blank lines between each block: (a) personal context paragraph, (b) one fenced code block using js/ts/html/css, (c) one direct question paragraph.\n"
-        . "6) The final paragraph must be one direct question ending with \"?\".\n"
-        . "7) No signature line. No mentions. No headings. No bullet lists.\n"
-        . "8) Avoid formulaic closers like \"Curious to hear your thoughts.\".\n"
-        . "9) Keep total length around 45-110 words.\n"
-        . "10) No mention of being a bot.\n\n"
+        . "5) For coding mode in question shape: write 3 blocks in this order with blank lines between each block: (a) personal context paragraph, (b) one fenced code block using js/ts/html/css, (c) one direct question paragraph.\n"
+        . "6) For coding mode in snippet_share shape: write 3 blocks in this order with blank lines between each block: (a) personal context paragraph, (b) one fenced code block using js/ts/html/css, (c) one short plain-language note about why the snippet is neat or useful. An optional light question is allowed but not required.\n"
+        . "7) If question_type is easy_code or deep, the final paragraph must be one direct question ending with \"?\".\n"
+        . "8) If question_type is snippet_share, the title should be a complete statement, not a question, and the final paragraph should not feel like troubleshooting.\n"
+        . "9) No signature line. No mentions. No headings. No bullet lists.\n"
+        . "10) Avoid formulaic closers like \"Curious to hear your thoughts.\".\n"
+        . "11) Keep total length around 45-110 words.\n"
+        . "12) No mention of being a bot.\n\n"
         . "Title rules:\n"
-        . "- Must be a concise, complete thought ending with \"?\".\n"
+        . "- If question_type is easy_code or deep, title must be a concise, complete thought ending with \"?\".\n"
+        . "- If question_type is snippet_share, title must be a concise, complete thought and must NOT end with \"?\".\n"
         . "- Natural forum style; not an essay title.\n"
         . "- No \"Something: something\" colon pattern.\n"
         . "- Must align with the raw question.\n\n"
@@ -636,75 +769,114 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
         . "- Sound like a person in the middle of real work.\n"
         . "- Mention one concrete tradeoff or failure mode.\n"
         . "- Use plain language; avoid academic phrasing and buzzword stacking.\n"
-        . "- Ask one strong question only.\n\n"
+        . "- Ask one strong question only when the shape is a question.\n"
+        . "- For snippet_share, prefer fun frontend/UI examples: color, animation, hover effects, DOM tricks, layout details, text/UI polish, or tiny browser utilities.\n\n"
         . "Bot personality layer (required):\n"
         . "BOT_USERNAME: {$botUsername}\n"
         . "BOT_PERSONA: {$botPersona}\n"
         . "Adapt diction and rhythm to this persona while staying concise and human.";
 
     $themeFocusRule = $animationPixelFocus
-        ? "- Theme focus for this run is animation + pixel art. The question must be about animation, canvas/WebGL motion, sprite workflows, or pixel-art rendering/asset issues.\n"
-        : "- Theme mix for this run is broad technical. Still include animation/pixel-art inspiration periodically when it fits naturally.\n";
-    $user = "Mode: {$mode}\n\n"
-        . "DIFFICULTY: " . ($preferCoding ? 'medium' : 'deep') . "\n\n"
-        . "Additional constraints:\n"
-        . "- Hard avoid repeated motifs: {$avoidMotifs}.\n"
-        . "- Use the keyword guidance below as inspiration. Do not copy a full phrase verbatim as the title.\n"
-        . "- Use diverse domains across programming, algorithms, data structures, system design, and product management.\n"
-        . "- Keep question natural and answerable from real experience.\n\n"
-        . "Keyword guidance for this run:\n"
-        . $keywordBlock . "\n\n"
-        . "Theme requirements:\n"
-        . $themeFocusRule . "\n"
-        . "Recent titles to avoid:\n"
-        . $recentBlock;
+        ? "- Optional flavor: animation/pixel-art can be used for this run, but only if it is naturally relevant and not repetitive with recent topics.\n"
+        : "- Theme mix for this run is broad frontend engineering and product execution. Prefer non-animation topics by default.\n";
+    $lastErr = 'llm_generation_failed';
+    $lastMeta = array();
+    $attemptRejects = array();
 
-    $res = deep_openai_chat_json(
-        array(
-            array('role' => 'system', 'content' => $system),
-            array('role' => 'user', 'content' => $user),
-        ),
-        0.75,
-        850
-    );
-    if (empty($res['ok']) || !is_array($res['json'] ?? null)) {
-        return array(
-            'ok' => false,
-            'error' => (string)($res['error'] ?? 'llm_generation_failed'),
-            'meta' => isset($res['meta']) && is_array($res['meta']) ? $res['meta'] : array(),
+    for ($attempt = 1; $attempt <= 5; $attempt++) {
+        $recentBlock = $recent === array() ? '(none)' : implode("\n- ", array_merge(array(''), $recent));
+        $attemptBlock = $attemptRejects === array() ? '(none)' : implode("\n- ", array_merge(array(''), $attemptRejects));
+        $user = "Mode: {$mode}\n\n"
+            . "DIFFICULTY: " . ($preferCoding ? 'medium' : 'deep') . "\n\n"
+            . "Additional constraints:\n"
+            . ($preferCoding ? "- Coding shape for this run: {$codingShape}.\n" : '')
+            . "- Hard avoid repeated motifs: {$avoidMotifs}.\n"
+            . "- Use the keyword guidance below as inspiration. Do not copy a full phrase verbatim as the title.\n"
+            . "- Use diverse domains across programming, algorithms, data structures, system design, product management, accessibility, performance, tooling, testing, APIs, state, security, and deployment.\n"
+            . "- Pixel-art/animation should be occasional only; do not default to it.\n"
+            . "- Keep question natural and answerable from real experience.\n"
+            . "- Primary domain for this run: {$selectedDomainLabel}. Make this the central theme.\n"
+            . "- If your draft overlaps a recent motif, switch to a clearly different domain and failure mode.\n\n"
+            . "Keyword guidance for this run:\n"
+            . $keywordBlock . "\n\n"
+            . "Theme requirements:\n"
+            . $themeFocusRule . "\n"
+            . "Recent titles to avoid:\n"
+            . $recentBlock . "\n\n"
+            . "Rejected in prior attempts this run (do not repeat):\n"
+            . $attemptBlock;
+
+        $res = deep_openai_chat_json(
+            array(
+                array('role' => 'system', 'content' => $system),
+                array('role' => 'user', 'content' => $user),
+            ),
+            0.75,
+            850
         );
-    }
+        $lastMeta = isset($res['meta']) && is_array($res['meta']) ? $res['meta'] : array();
+        if (empty($res['ok']) || !is_array($res['json'] ?? null)) {
+            $lastErr = (string)($res['error'] ?? 'llm_generation_failed');
+            continue;
+        }
 
-    $decoded = $res['json'];
-    if (isset($decoded['question']) && is_array($decoded['question'])) {
-        $decoded = $decoded['question'];
-    }
+        $decoded = $res['json'];
+        if (isset($decoded['question']) && is_array($decoded['question'])) {
+            $decoded = $decoded['question'];
+        }
 
-    $san = deep_sanitize_generated_question($decoded, $preferCoding);
-    if (!is_array($san)) {
+        $san = deep_sanitize_generated_question($decoded, $preferCoding);
+        if (!is_array($san)) {
+            $lastErr = 'Generated question failed validation.';
+            continue;
+        }
+
+        $candidateTitle = (string)($san['title'] ?? '');
+        $candidateBlob = $candidateTitle . "\n" . (string)($san['raw'] ?? '');
+        if (title_too_similar_to_recent($candidateTitle, $recent) || title_hits_recent_hotspot($candidateTitle, $recent)) {
+            $attemptRejects[] = $candidateTitle;
+            if (count($attemptRejects) > 12) $attemptRejects = array_slice($attemptRejects, -12);
+            $lastErr = 'Generated question was too similar to recent topics.';
+            continue;
+        }
+        if (!deep_domain_matches_text($selectedDomain, $candidateBlob)) {
+            $attemptRejects[] = $candidateTitle;
+            if (count($attemptRejects) > 12) $attemptRejects = array_slice($attemptRejects, -12);
+            $lastErr = 'Generated question missed required domain focus.';
+            continue;
+        }
+
+        if (!isset($san['question_type']) || trim((string)$san['question_type']) === '') {
+            $san['question_type'] = $wantedType;
+        }
+
         return array(
-            'ok' => false,
-            'error' => 'Generated question failed validation.',
-            'meta' => isset($res['meta']) && is_array($res['meta']) ? $res['meta'] : array(),
+            'ok' => true,
+            'question' => $san,
+            'mode' => $mode,
+            'coding_shape' => $codingShape,
+            'domain_key' => (string)($selectedDomain['key'] ?? ''),
+            'domain_label' => $selectedDomainLabel,
+            'animation_pixelart_focus' => $animationPixelFocus,
+            'meta' => $lastMeta,
         );
-    }
-    if (!isset($san['question_type']) || trim((string)$san['question_type']) === '') {
-        $san['question_type'] = $wantedType;
     }
 
     return array(
-        'ok' => true,
-        'question' => $san,
-        'mode' => $mode,
-        'animation_pixelart_focus' => $animationPixelFocus,
-        'meta' => isset($res['meta']) && is_array($res['meta']) ? $res['meta'] : array(),
+        'ok' => false,
+        'error' => $lastErr,
+        'meta' => $lastMeta,
     );
 }
 
 function deep_sanitize_generated_question($item, $isCoding)
 {
     if (!is_array($item)) return null;
-    $title = ensure_question_mark_title(collapse_spaces((string)($item['title'] ?? '')));
+    $questionType = trim((string)($item['question_type'] ?? ($isCoding ? 'easy_code' : 'deep')));
+    $title = collapse_spaces((string)($item['title'] ?? ''));
+    if ($questionType !== 'snippet_share') {
+        $title = ensure_question_mark_title($title);
+    }
     $raw = trim((string)($item['raw'] ?? ''));
     $language = strtolower(trim((string)($item['language'] ?? 'mixed')));
     if ($language === '') $language = 'mixed';
@@ -718,11 +890,17 @@ function deep_sanitize_generated_question($item, $isCoding)
     if ($isCoding && !preg_match('/```(js|javascript|ts|typescript|html|css)\b/i', $raw)) {
         return null;
     }
+    if ($questionType === 'snippet_share' && title_looks_question_like($title)) {
+        return null;
+    }
+    if ($questionType !== 'snippet_share' && !title_looks_question_like($title)) {
+        return null;
+    }
 
     return array(
         'title' => $title,
         'raw' => $raw,
-        'question_type' => $isCoding ? 'easy_code' : 'deep',
+        'question_type' => $questionType !== '' ? $questionType : ($isCoding ? 'easy_code' : 'deep'),
         'language' => $language,
         'family' => question_family_key($title, $raw, $language),
         'seed_source' => 'llm_generated',
@@ -754,12 +932,12 @@ function deep_generate_llm_question_pool($forumRecentTitles, $recentQuestionTitl
     }
     $recentTitles = array_values(array_unique($recentTitles));
     $recentTitlesBlock = $recentTitles === array() ? '(none)' : implode("\n- ", array_merge(array(''), $recentTitles));
-    $keywordBlock = deep_keywords_block_for_prompt(true, true);
+    $keywordBlock = deep_keywords_block_for_prompt(true, false);
     $avoidMotifs = deep_avoid_motifs_block();
 
     $system = 'Generate varied technical forum questions in JSON only. '
-        . 'Focus on breadth: programming, algorithms, data structures, system design, and product management. '
-        . 'Reserve a meaningful slice for animation/pixel-art themes (canvas/WebGL motion, sprite workflows, tilemaps, and rendering crispness). '
+        . 'Focus on breadth: programming, algorithms, data structures, system design, product management, accessibility, performance, testing, APIs, tooling, and security. '
+        . 'Animation/pixel-art topics are allowed only occasionally when naturally relevant. '
         . 'Keep titles concise, natural, and complete thoughts ending with a question mark. '
         . 'For coding questions, include a runnable code block and one specific ask. '
         . 'Do not repeat or paraphrase recent topics. '
@@ -775,7 +953,7 @@ function deep_generate_llm_question_pool($forumRecentTitles, $recentQuestionTitl
         . "- concept: " . (int)$conceptCount . "\n\n"
         . "Rules:\n"
         . "- 80% coding, 20% conceptual.\n"
-        . "- At least 30% of all generated items should be animation/pixel-art inspired.\n"
+        . "- Keep animation/pixel-art inspired items to 10% or less of all generated items.\n"
         . "- Use the keyword guidance below as inspiration; do not copy phrases verbatim into titles.\n"
         . "- No poll syntax.\n"
         . "- No mention of being a bot.\n"
@@ -1292,6 +1470,7 @@ function repetitive_hotspot_key($text)
     $t = strtolower((string)$text);
     if ($t === '') return '';
     if (preg_match('/\b(sprite|spritesheet|tilemap|pixel art|pixelart|game loop|delta time|dither|palette)\b/i', $t)) return 'animation_pixelart';
+    if (preg_match('/\b(debounce|throttle|stale state|stale closure|stale cache|stale result|optimistic ui|retry|out of order|race condition)\b/i', $t)) return 'state_async_race';
     if (preg_match('/\b(settimeout|requestanimationframe|microtask|macrotask|event loop)\b/i', $t)) return 'js_timing';
     if (preg_match('/\b(optional chaining|nullish|destructuring default)\b/i', $t)) return 'js_optional_default';
     if (preg_match('/\b(temporal dead zone|\btdz\b|let before)\b/i', $t)) return 'js_tdz';
@@ -1347,6 +1526,9 @@ function deep_question_category_id($title, $raw)
 {
     $title = (string)$title;
     $raw = (string)$raw;
+    if (text_looks_webdev_related($title . "\n" . $raw) && preg_match('/```(js|javascript|ts|typescript|html|css)\b/i', $raw)) {
+        return (int)KONVO_WEBDEV_CATEGORY_ID;
+    }
     if (title_looks_question_like($title) && text_looks_webdev_related($title . "\n" . $raw)) {
         return (int)KONVO_WEBDEV_CATEGORY_ID;
     }
@@ -1636,6 +1818,19 @@ if (KONVO_API_KEY === '') {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+$force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+
+if (!$dryRun && !$allowNewTopics && !$force) {
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+    ));
+}
+
 $bot = pick_bot($bots);
 $keywordMap = deep_llm_keyword_map();
 $keywordStats = array(
@@ -1700,6 +1895,8 @@ if ($dryRun) {
         'live_generation' => array(
             'mode' => (string)($liveGen['mode'] ?? ($preferCoding ? 'coding' : 'conceptual')),
             'mode_preferred' => $preferCoding ? 'coding' : 'conceptual',
+            'domain_key' => (string)($liveGen['domain_key'] ?? ''),
+            'domain_label' => (string)($liveGen['domain_label'] ?? ''),
             'animation_pixelart_focus' => !empty($liveGen['animation_pixelart_focus']),
             'retry_attempted' => $retryAttempted,
             'meta' => isset($liveGen['meta']) && is_array($liveGen['meta']) ? $liveGen['meta'] : array(),
@@ -1731,6 +1928,7 @@ $postNumber = (int)($res['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
 remember_question_title($topicTitle);
 remember_question_family((string)($q['title'] ?? ''), (string)($q['raw'] ?? ''), (string)($q['language'] ?? 'mixed'));
+remember_question_domain((string)($liveGen['domain_key'] ?? ''));
 
 out_json(200, array(
     'ok' => true,
@@ -1744,6 +1942,8 @@ out_json(200, array(
         'question_type' => (string)($q['question_type'] ?? 'deep'),
         'language' => (string)($q['language'] ?? 'mixed'),
         'family' => (string)($q['family'] ?? question_family_key((string)($q['title'] ?? ''), (string)($q['raw'] ?? ''), (string)($q['language'] ?? 'mixed'))),
+        'domain_key' => (string)($liveGen['domain_key'] ?? ''),
+        'domain_label' => (string)($liveGen['domain_label'] ?? ''),
         'seed_source' => (string)($q['seed_source'] ?? 'llm_generated'),
         'seed_url' => (string)($q['seed_url'] ?? ''),
     ),
