@@ -788,7 +788,7 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
     }
     $codingShape = 'question';
     if ($preferCoding) {
-        $codingShape = ($shapeOverride !== '') ? $shapeOverride : ((mt_rand(1, 100) <= 24) ? 'snippet_share' : 'question');
+        $codingShape = ($shapeOverride !== '') ? $shapeOverride : ((mt_rand(1, 100) <= 70) ? 'snippet_share' : 'question');
     }
     $wantedType = $preferCoding ? ($codingShape === 'snippet_share' ? 'snippet_share' : 'easy_code') : 'deep';
     $botUsername = trim((string)($bot['username'] ?? 'BayMax'));
@@ -1163,7 +1163,7 @@ function pick_live_llm_question($codingPool, $conceptPool)
         );
     }
 
-    $preferCoding = (mt_rand(1, 100) <= 80);
+    $preferCoding = (mt_rand(1, 100) <= 90);
     $pickPool = $preferCoding ? $codingFiltered : $conceptFiltered;
     if ($pickPool === array()) {
         $pickPool = $preferCoding ? $conceptFiltered : $codingFiltered;
@@ -1921,7 +1921,7 @@ $keywordStats = array(
 );
 $recentForumTitlesForLlm = recent_forum_titles(180);
 $recentQuestionTitlesForLlm = load_recent_questions();
-$preferCoding = (mt_rand(1, 100) <= 80);
+$preferCoding = (mt_rand(1, 100) <= 90);
 if (in_array(strtolower($shapeOverride), array('snippet_share', 'question'), true)) {
     $preferCoding = true;
 }
