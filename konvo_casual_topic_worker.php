@@ -1569,11 +1569,10 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     $botName = trim((string)($bot['name'] ?? 'BayMax'));
     $soulKey = trim((string)($bot['soul_key'] ?? strtolower($botName)));
     $soulFallback = trim((string)($bot['soul_fallback'] ?? 'Write naturally, concise, and human.'));
-    $soulPrompt = konvo_compose_forum_persona_system_prompt(
-        konvo_load_soul($soulKey, $soulFallback)
-    );
+    $soulPrompt = function_exists('konvo_compose_casual_topic_persona_prompt')
+        ? konvo_compose_casual_topic_persona_prompt(konvo_load_soul($soulKey, $soulFallback))
+        : konvo_load_soul($soulKey, $soulFallback);
     $recentHints = casual_recent_hint_lines($recent);
-    $recentOpeningHints = casual_recent_opening_stems($recent, 14);
     $seedMeta = casual_pick_random_seed_topic($recent, $recentForumTitles);
     $seedTopic = trim((string)($seedMeta['seed_topic'] ?? ''));
     $seedKind = trim((string)($seedMeta['seed_kind'] ?? 'fallback_pool'));
@@ -1586,16 +1585,11 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'You generate a single casual forum discussion starter for humans. '
         . 'Return ONLY JSON with this schema: '
         . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
-        . 'Rules: turn the seed topic into one concrete observation and invite discussion naturally. '
-        . 'The seed comes from a live news source. Do NOT summarize the article or sound like a digest. Use it as the basis for one conversational, slightly opinionated observation that a person would actually post after reading it. '
-        . 'Avoid politics, violence, tragedy, culture-war bait, link dumps, and coding help requests. '
-        . 'Use natural human language that sounds like a real forum member. '
-        . 'Title: 6-13 words, complete thought, statement style by default, no colon, no clickbait, no emoji. '
-        . 'Body: 2-3 short sentences, max 2 short paragraphs. '
-        . 'One question in the body is allowed when useful, but do not force one every time. '
-        . 'No links, no hashtags, no code blocks. '
-        . 'Do not sign the post; Discourse already shows the author username. '
-        . 'Uniqueness is mandatory: do not paraphrase recent topics.';
+        . 'Turn the seed topic into one conversational forum post with a clear opinionated observation. '
+        . 'The seed comes from a live article. Do NOT summarize it like a digest. React to it like a person who just read it and has one real thought. '
+        . 'Keep titles concise, complete, and natural. '
+        . 'Keep the body short, conversational, and human. '
+        . 'No code blocks, no hashtags, no sign-off line.';
 
     $user = "Seed topic: {$seedTopic}\n"
         . "Seed kind: {$seedKind}\n"
@@ -1603,13 +1597,12 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . ($seedUrl !== '' ? "Seed URL: {$seedUrl}\n" : '')
         . ($seedSummary !== '' ? "Seed summary: {$seedSummary}\n" : '')
         . ($seedAngleHint !== '' ? "Interesting angle hint: {$seedAngleHint}\n" : '')
-        . "Generate one post from this seed as an observation-first discussion starter.\n"
-        . "Make it conversational, like a real person reacting to something current in tech.\n"
-        . "Do not read like a summary. Pull out one human or practical angle and talk about that.\n"
-        . "Set plan_lane to a short lane label that best fits this seed.\n"
+        . "Generate one post from this seed.\n"
+        . "Use the article as context only. The post itself should sound like a quick thought you had after reading it.\n"
+        . "Give the title as a statement, not a news headline.\n"
+        . "Set plan_lane to a short lane label if useful, otherwise keep it simple.\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
-        . "Recent opening stems to avoid reusing:\n{$recentOpeningHints}\n\n"
-        . ($strict ? "This is a regeneration attempt. Pick a clearly different angle than prior drafts.\n" : '')
+        . ($strict ? "This is a regeneration attempt. Pick a clearly different thought and rhythm than prior drafts.\n" : '')
         . ($extraAvoidance !== '' ? ("Avoidance hint: " . trim($extraAvoidance) . "\n") : '')
         . "Return JSON only.";
 
