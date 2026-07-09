@@ -1248,6 +1248,30 @@ function casual_normalize_body(string $raw, string $signature): string
     return casual_normalize_signature($raw, $signature);
 }
 
+function casual_append_source_reference(string $raw, string $sourceUrl): string
+{
+    $sourceUrl = trim($sourceUrl);
+    if ($sourceUrl === '' || !preg_match('/^https?:\/\/\S+$/i', $sourceUrl)) {
+        return trim($raw);
+    }
+
+    $raw = trim(str_replace(array("\r\n", "\r"), "\n", (string)$raw));
+    if ($raw === '') {
+        return 'source: ' . $sourceUrl;
+    }
+
+    if (preg_match('/(^|\n)source:\s*https?:\/\/\S+/i', $raw)) {
+        $raw = preg_replace('/(^|\n)source:\s*https?:\/\/\S+/i', '$1source: ' . $sourceUrl, $raw, 1) ?? $raw;
+        return trim($raw);
+    }
+
+    if (stripos($raw, $sourceUrl) !== false) {
+        return $raw;
+    }
+
+    return $raw . "\n\nsource: " . $sourceUrl;
+}
+
 function casual_has_controversial_signals(string $text): bool
 {
     $t = strtolower(trim($text));
@@ -1609,6 +1633,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
 
     $title = casual_normalize_title((string)($obj['title'] ?? ''));
     $raw = casual_normalize_body((string)($obj['raw'] ?? ''), $signature);
+    $raw = casual_append_source_reference($raw, $seedUrl);
     $planMood = trim((string)($obj['plan_mood'] ?? ''));
     $planAngle = trim((string)($obj['plan_angle'] ?? ''));
     $planIntent = trim((string)($obj['plan_posting_intent'] ?? ''));
