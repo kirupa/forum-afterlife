@@ -503,6 +503,330 @@ function casual_fetch_latest_topic_titles(int $max = 120): array
     return array_values(array_unique($titles));
 }
 
+function casual_feed_sources(): array
+{
+    return array(
+        array('site' => 'daily.dev', 'feed' => 'https://daily.dev/blog/rss.xml', 'kind' => 'technology'),
+        array('site' => 'Hacker News', 'feed' => 'https://hnrss.org/frontpage', 'kind' => 'technology'),
+        array('site' => 'TechCrunch', 'feed' => 'https://techcrunch.com/feed/', 'kind' => 'technology'),
+        array('site' => 'The Verge', 'feed' => 'https://www.theverge.com/rss/index.xml', 'kind' => 'technology'),
+        array('site' => 'Ars Technica', 'feed' => 'https://feeds.arstechnica.com/arstechnica/index', 'kind' => 'technology'),
+        array('site' => 'WIRED', 'feed' => 'https://www.wired.com/feed/rss', 'kind' => 'technology'),
+        array('site' => 'Smashing Magazine', 'feed' => 'https://www.smashingmagazine.com/feed/', 'kind' => 'design'),
+        array('site' => 'CSS-Tricks', 'feed' => 'https://css-tricks.com/feed/', 'kind' => 'design'),
+        array('site' => 'DEV Community', 'feed' => 'https://dev.to/feed', 'kind' => 'technology'),
+        array('site' => 'GitHub Blog', 'feed' => 'https://github.blog/feed/', 'kind' => 'technology'),
+        array('site' => 'InfoQ', 'feed' => 'https://www.infoq.com/feed/', 'kind' => 'technology'),
+        array('site' => 'UX Collective', 'feed' => 'https://uxdesign.cc/feed', 'kind' => 'design'),
+        array('site' => 'Creative Bloq', 'feed' => 'https://www.creativebloq.com/feed', 'kind' => 'design'),
+        array('site' => 'designboom', 'feed' => 'https://www.designboom.com/feed/', 'kind' => 'design'),
+        array('site' => 'Dezeen', 'feed' => 'https://www.dezeen.com/feed/', 'kind' => 'design'),
+        array('site' => 'Webdesigner Depot', 'feed' => 'https://webdesignerdepot.com/feed/', 'kind' => 'design'),
+        array('site' => 'The Next Web', 'feed' => 'https://thenextweb.com/feed/', 'kind' => 'technology'),
+        array('site' => 'Fast Company Tech', 'feed' => 'https://www.fastcompany.com/technology/rss', 'kind' => 'technology'),
+        array('site' => 'Google AI Blog', 'feed' => 'https://blog.google/technology/ai/rss/', 'kind' => 'ai'),
+    );
+}
+
+function casual_fetch_url(string $url): array
+{
+    if (!function_exists('curl_init')) {
+        return array('ok' => false, 'status' => 0, 'error' => 'curl_init unavailable', 'body' => '');
+    }
+    $ch = curl_init($url);
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_USERAGENT => 'konvo-casual-topic-worker/2.0',
+    ));
+    $body = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($body === false || $err !== '' || $status < 200 || $status >= 300) {
+        return array('ok' => false, 'status' => $status, 'error' => $err, 'body' => '');
+    }
+    return array('ok' => true, 'status' => $status, 'error' => '', 'body' => (string)$body);
+}
+
+function casual_decode_xml_text(string $text): string
+{
+    $text = str_replace(array('<![CDATA[', ']]>'), ' ', $text);
+    $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+    $text = strip_tags($text);
+    $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+    return trim((string)$text);
+}
+
+function casual_normalize_feed_url(string $url): string
+{
+    $url = trim(html_entity_decode($url, ENT_QUOTES, 'UTF-8'));
+    if ($url === '') return '';
+    if (str_starts_with($url, '//')) $url = 'https:' . $url;
+    if (!preg_match('/^https?:\/\//i', $url)) return '';
+    return $url;
+}
+
+function casual_extract_image_url_from_block(string $block): string
+{
+    if ($block === '') return '';
+    $patterns = array(
+        '/<media:content[^>]*url=["\']([^"\']+)["\'][^>]*>/i',
+        '/<media:thumbnail[^>]*url=["\']([^"\']+)["\'][^>]*>/i',
+        '/<enclosure[^>]*type=["\']image\/[^"\']+["\'][^>]*url=["\']([^"\']+)["\'][^>]*>/i',
+        '/<enclosure[^>]*url=["\']([^"\']+)["\'][^>]*type=["\']image\/[^"\']+["\'][^>]*>/i',
+        '/<img[^>]*src=["\']([^"\']+)["\'][^>]*>/i',
+    );
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $block, $m) && isset($m[1])) {
+            $url = casual_normalize_feed_url((string)$m[1]);
+            if ($url !== '') return $url;
+        }
+    }
+    return '';
+}
+
+function casual_text_is_english_like(string $text): bool
+{
+    $text = trim($text);
+    if ($text === '') return false;
+    $sample = substr($text, 0, 500);
+    preg_match_all('/[a-z]/i', $sample, $latin);
+    preg_match_all('/[\x{00C0}-\x{024F}\x{0400}-\x{04FF}\x{3040}-\x{30FF}\x{4E00}-\x{9FFF}\x{0600}-\x{06FF}]/u', $sample, $nonLatin);
+    $latinCount = count($latin[0] ?? array());
+    $nonLatinCount = count($nonLatin[0] ?? array());
+    return $latinCount >= max(8, $nonLatinCount * 2);
+}
+
+function casual_item_looks_shopping_deal(array $item): bool
+{
+    $blob = trim(
+        (string)($item['title'] ?? '') . "\n"
+        . (string)($item['summary'] ?? '') . "\n"
+        . (string)($item['source'] ?? '')
+    );
+    $url = strtolower(trim((string)($item['url'] ?? '')));
+    if ($blob === '' && $url === '') return false;
+    if (preg_match('/\b(coupon|promo code|discount code|price drop|clearance|doorbuster|black friday|cyber monday|prime day|buy now|shop now|limited[- ]time offer|save\s*\$|%\s*off|for less)\b/i', $blob)) {
+        return true;
+    }
+    $dealWord = (bool)preg_match('/\b(deal|deals|sale|on sale|discount|offer|offers)\b/i', $blob);
+    $commerceWord = (bool)preg_match('/\b(shop|shopping|buy|price|priced|pricing|checkout|cart|amazon|walmart|best buy|target|costco|ebay)\b/i', $blob)
+        || (bool)preg_match('/\$\s*\d+|\d+\s*usd/i', $blob);
+    if ($dealWord && $commerceWord) return true;
+    return (bool)preg_match('/\/deals?\b|[?&](deal|deals|coupon|promo|discount)=|black-friday|cyber-monday|prime-day|\/shopping\//i', $url);
+}
+
+function casual_item_looks_controversial_topic(array $item): bool
+{
+    $blob = strtolower(trim(
+        (string)($item['title'] ?? '') . "\n"
+        . (string)($item['summary'] ?? '') . "\n"
+        . (string)($item['source'] ?? '')
+    ));
+    if ($blob === '') return false;
+    return (bool)preg_match(
+        '/\b(election|campaign|senate|congress|president|prime minister|gaza|ukraine|war|missile|bomb|killed|murder|shooting|sexual|sex|porn|nsfw|abortion|transgender|immigration|deport|riot|protest|police shooting)\b/i',
+        $blob
+    );
+}
+
+function casual_parse_feed_items(string $xml, int $maxItems): array
+{
+    $items = array();
+    if ($xml === '') return $items;
+    $blocks = array();
+    if (preg_match_all('/<item\b[\s\S]*?<\/item>/i', $xml, $m) && isset($m[0])) {
+        $blocks = $m[0];
+    } elseif (preg_match_all('/<entry\b[\s\S]*?<\/entry>/i', $xml, $m2) && isset($m2[0])) {
+        $blocks = $m2[0];
+    }
+
+    foreach ($blocks as $block) {
+        $title = '';
+        $link = '';
+        $summary = '';
+        $descriptionRaw = '';
+        $summaryRaw = '';
+        $contentRaw = '';
+        $imageUrl = '';
+
+        if (preg_match('/<title[^>]*>([\s\S]*?)<\/title>/i', $block, $t)) {
+            $title = casual_decode_xml_text((string)$t[1]);
+        }
+        if (preg_match('/<link[^>]*>([\s\S]*?)<\/link>/i', $block, $l)) {
+            $link = trim(casual_decode_xml_text((string)$l[1]));
+        }
+        if ($link === '' && preg_match('/<link[^>]*href=["\']([^"\']+)["\']/i', $block, $lh)) {
+            $link = trim((string)$lh[1]);
+        }
+        if ($link === '' && preg_match('/<guid[^>]*>([\s\S]*?)<\/guid>/i', $block, $g)) {
+            $guid = trim(casual_decode_xml_text((string)$g[1]));
+            if (preg_match('/^https?:\/\//i', $guid)) $link = $guid;
+        }
+        if ($title === '' || $link === '' || stripos($link, 'http') !== 0) continue;
+
+        if (preg_match('/<description[^>]*>([\s\S]*?)<\/description>/i', $block, $d)) {
+            $descriptionRaw = (string)$d[1];
+            $summary = casual_decode_xml_text((string)$d[1]);
+        }
+        if ($summary === '' && preg_match('/<summary[^>]*>([\s\S]*?)<\/summary>/i', $block, $s)) {
+            $summaryRaw = (string)$s[1];
+            $summary = casual_decode_xml_text((string)$s[1]);
+        }
+        if ($summary === '' && preg_match('/<content[^>]*>([\s\S]*?)<\/content>/i', $block, $c)) {
+            $contentRaw = (string)$c[1];
+            $summary = casual_decode_xml_text((string)$c[1]);
+        }
+        if (!casual_text_is_english_like($title . "\n" . $summary)) continue;
+
+        $imageSources = array($block, $descriptionRaw, $summaryRaw, $contentRaw);
+        foreach ($imageSources as $blob) {
+            $cand = casual_extract_image_url_from_block((string)$blob);
+            if ($cand !== '') {
+                $imageUrl = $cand;
+                break;
+            }
+        }
+
+        $items[] = array(
+            'title' => casual_normalize_title($title),
+            'url' => trim($link),
+            'summary' => trim((string)$summary),
+            'image_url' => $imageUrl,
+        );
+        if (count($items) >= $maxItems) break;
+    }
+    return $items;
+}
+
+function casual_fetch_news_seed_candidates(int $max = 30): array
+{
+    $all = array();
+    foreach (casual_feed_sources() as $source) {
+        $feed = trim((string)($source['feed'] ?? ''));
+        if ($feed === '') continue;
+        $res = casual_fetch_url($feed);
+        if (empty($res['ok'])) continue;
+        $items = casual_parse_feed_items((string)($res['body'] ?? ''), 6);
+        foreach ($items as $item) {
+            $candidate = array(
+                'title' => trim((string)($item['title'] ?? '')),
+                'url' => trim((string)($item['url'] ?? '')),
+                'summary' => trim((string)($item['summary'] ?? '')),
+                'image_url' => trim((string)($item['image_url'] ?? '')),
+                'kind' => trim((string)($source['kind'] ?? 'technology')),
+                'source' => trim((string)($source['site'] ?? '')),
+                'source_feed' => $feed,
+            );
+            if ($candidate['title'] === '' || $candidate['url'] === '') continue;
+            if (casual_item_looks_shopping_deal($candidate)) continue;
+            if (casual_item_looks_controversial_topic($candidate)) continue;
+            if (!casual_text_is_english_like($candidate['title'] . "\n" . $candidate['summary'])) continue;
+            $all[] = $candidate;
+        }
+    }
+
+    $seen = array();
+    $clean = array();
+    foreach ($all as $item) {
+        $key = casual_normalized_title_key((string)($item['title'] ?? ''));
+        if ($key === '' || isset($seen[$key])) continue;
+        $seen[$key] = true;
+        $clean[] = $item;
+        if (count($clean) >= $max) break;
+    }
+    return $clean;
+}
+
+function casual_pick_interesting_news_seed(array $recentLocal, array $recentForumTitles): array
+{
+    $recentTitles = array();
+    foreach ($recentLocal as $item) {
+        if (!is_array($item)) continue;
+        $t = trim((string)($item['title'] ?? ''));
+        if ($t !== '') $recentTitles[] = $t;
+    }
+    foreach ($recentForumTitles as $t) {
+        $t = trim((string)$t);
+        if ($t !== '') $recentTitles[] = $t;
+        if (count($recentTitles) >= 100) break;
+    }
+
+    $candidates = array();
+    foreach (casual_fetch_news_seed_candidates(36) as $item) {
+        $title = trim((string)($item['title'] ?? ''));
+        $summary = trim((string)($item['summary'] ?? ''));
+        if ($title === '') continue;
+        if (casual_title_too_similar_to_recent($title, $recentTitles)) continue;
+        if (casual_candidate_too_close_to_recent_local($title, $summary, $recentLocal)) continue;
+        $candidates[] = $item;
+        if (count($candidates) >= 12) break;
+    }
+
+    if ($candidates === array()) {
+        return array(
+            'seed_topic' => '',
+            'seed_kind' => 'live_feed_unavailable',
+            'seed_source' => '',
+            'seed_url' => '',
+            'seed_summary' => '',
+        );
+    }
+
+    if (KONVO_OPENAI_API_KEY !== '') {
+        $candidateLines = array();
+        foreach ($candidates as $idx => $item) {
+            $candidateLines[] = ($idx + 1) . '. '
+                . trim((string)($item['title'] ?? ''))
+                . ' | source=' . trim((string)($item['source'] ?? ''))
+                . ' | kind=' . trim((string)($item['kind'] ?? ''))
+                . ' | summary=' . trim((string)($item['summary'] ?? ''));
+        }
+        $system = 'Pick the single most interesting live tech/design/gaming topic for a casual forum conversation. '
+            . 'Return ONLY JSON with schema: {"pick":number,"reason":"...","angle":"..."}. '
+            . 'Prefer a topic that can spark a conversational human take, not a dry summary.';
+        $user = "Candidates:\n" . implode("\n", $candidateLines) . "\n\nReturn JSON now.";
+        $payload = array(
+            'model' => konvo_model_for_task('casual_topic_seed_pick'),
+            'messages' => array(
+                array('role' => 'system', 'content' => $system),
+                array('role' => 'user', 'content' => $user),
+            ),
+            'temperature' => 0.35,
+        );
+        $res = casual_openai_json($payload);
+        if (!empty($res['ok'])) {
+            $content = trim((string)($res['json']['choices'][0]['message']['content'] ?? ''));
+            $obj = casual_extract_json_object($content);
+            $pick = (int)($obj['pick'] ?? 0);
+            if ($pick >= 1 && $pick <= count($candidates)) {
+                $picked = $candidates[$pick - 1];
+                return array(
+                    'seed_topic' => trim((string)($picked['title'] ?? '')),
+                    'seed_kind' => trim((string)($picked['kind'] ?? 'technology')),
+                    'seed_source' => trim((string)($picked['source'] ?? '')),
+                    'seed_url' => trim((string)($picked['url'] ?? '')),
+                    'seed_summary' => trim((string)($picked['summary'] ?? '')),
+                    'seed_reason' => trim((string)($obj['reason'] ?? '')),
+                    'seed_angle' => trim((string)($obj['angle'] ?? '')),
+                );
+            }
+        }
+    }
+
+    shuffle($candidates);
+    $picked = $candidates[0];
+    return array(
+        'seed_topic' => trim((string)($picked['title'] ?? '')),
+        'seed_kind' => trim((string)($picked['kind'] ?? 'technology')),
+        'seed_source' => trim((string)($picked['source'] ?? '')),
+        'seed_url' => trim((string)($picked['url'] ?? '')),
+        'seed_summary' => trim((string)($picked['summary'] ?? '')),
+    );
+}
+
 function casual_normalized_title_key(string $title): string
 {
     $s = strtolower(trim($title));
@@ -1168,9 +1492,13 @@ function casual_seed_topic_pool(): array
     );
 }
 
-function casual_pick_random_seed_topic(array $recentLocal, array $recentForumTitles): string
+function casual_pick_random_seed_topic(array $recentLocal, array $recentForumTitles): array
 {
+    $picked = casual_pick_interesting_news_seed($recentLocal, $recentForumTitles);
+    if (trim((string)($picked['seed_topic'] ?? '')) !== '') return $picked;
+
     $pool = casual_seed_topic_pool();
+    $candidates = array();
     $recentTitles = array();
     foreach ($recentLocal as $item) {
         if (!is_array($item)) continue;
@@ -1182,7 +1510,6 @@ function casual_pick_random_seed_topic(array $recentLocal, array $recentForumTit
         if ($t !== '') $recentTitles[] = $t;
         if (count($recentTitles) >= 80) break;
     }
-    $candidates = array();
     foreach ($pool as $seed) {
         $seed = trim((string)$seed);
         if ($seed === '') continue;
@@ -1197,7 +1524,13 @@ function casual_pick_random_seed_topic(array $recentLocal, array $recentForumTit
     }
     if ($candidates === array()) $candidates = $pool;
     shuffle($candidates);
-    return (string)$candidates[0];
+    return array(
+        'seed_topic' => (string)$candidates[0],
+        'seed_kind' => 'fallback_pool_after_feed_miss',
+        'seed_source' => '',
+        'seed_url' => '',
+        'seed_summary' => '',
+    );
 }
 
 function casual_generate_with_llm(array $bot, string $signature, array $recent, array $recentForumTitles, bool $strict, string $extraAvoidance = '', array $lane = array()): array
@@ -1210,13 +1543,20 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     );
     $recentHints = casual_recent_hint_lines($recent);
     $recentOpeningHints = casual_recent_opening_stems($recent, 14);
-    $seedTopic = casual_pick_random_seed_topic($recent, $recentForumTitles);
+    $seedMeta = casual_pick_random_seed_topic($recent, $recentForumTitles);
+    $seedTopic = trim((string)($seedMeta['seed_topic'] ?? ''));
+    $seedKind = trim((string)($seedMeta['seed_kind'] ?? 'fallback_pool'));
+    $seedSource = trim((string)($seedMeta['seed_source'] ?? ''));
+    $seedUrl = trim((string)($seedMeta['seed_url'] ?? ''));
+    $seedSummary = trim((string)($seedMeta['seed_summary'] ?? ''));
+    $seedAngleHint = trim((string)($seedMeta['seed_angle'] ?? ''));
 
     $system = ($soulPrompt !== '' ? "Bot voice and personality guidance:\n{$soulPrompt}\n\n" : '')
         . 'You generate a single casual forum discussion starter for humans. '
         . 'Return ONLY JSON with this schema: '
         . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
         . 'Rules: turn the seed topic into one concrete observation and invite discussion naturally. '
+        . 'The seed comes from a live news source. Do NOT summarize the article or sound like a digest. Use it as the basis for one conversational, slightly opinionated observation that a person would actually post after reading it. '
         . 'Avoid politics, violence, tragedy, culture-war bait, link dumps, and coding help requests. '
         . 'Use natural human language that sounds like a real forum member. '
         . 'Title: 6-13 words, complete thought, statement style by default, no colon, no clickbait, no emoji. '
@@ -1227,7 +1567,14 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'Uniqueness is mandatory: do not paraphrase recent topics.';
 
     $user = "Seed topic: {$seedTopic}\n"
+        . "Seed kind: {$seedKind}\n"
+        . ($seedSource !== '' ? "Seed source: {$seedSource}\n" : '')
+        . ($seedUrl !== '' ? "Seed URL: {$seedUrl}\n" : '')
+        . ($seedSummary !== '' ? "Seed summary: {$seedSummary}\n" : '')
+        . ($seedAngleHint !== '' ? "Interesting angle hint: {$seedAngleHint}\n" : '')
         . "Generate one post from this seed as an observation-first discussion starter.\n"
+        . "Make it conversational, like a real person reacting to something current in tech.\n"
+        . "Do not read like a summary. Pull out one human or practical angle and talk about that.\n"
         . "Set plan_lane to a short lane label that best fits this seed.\n"
         . "Recent topics to avoid repeating:\n{$recentHints}\n\n"
         . "Recent opening stems to avoid reusing:\n{$recentOpeningHints}\n\n"
@@ -1286,6 +1633,9 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
             'posting_intent' => $planIntent,
             'lane' => $planLane,
             'seed_topic' => $seedTopic,
+            'seed_kind' => $seedKind,
+            'seed_source' => $seedSource,
+            'seed_url' => $seedUrl,
         ),
     );
 }
