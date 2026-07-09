@@ -135,6 +135,141 @@ function spot_recent_vals(array $state, string $key, int $max = 12): array
     return $out;
 }
 
+function spot_recent_case_records(array $state, int $max = 16): array
+{
+    $out = array();
+    if (!isset($state['recent_cases']) || !is_array($state['recent_cases'])) return $out;
+    foreach ($state['recent_cases'] as $row) {
+        if (!is_array($row)) continue;
+        $bugShape = strtolower(trim((string)($row['bug_shape'] ?? '')));
+        $theme = strtolower(trim((string)($row['theme'] ?? '')));
+        $surface = strtolower(trim((string)($row['ui_surface'] ?? '')));
+        $lang = strtolower(trim((string)($row['language'] ?? '')));
+        $lead = trim((string)($row['lead'] ?? ''));
+        $terms = isset($row['terms']) && is_array($row['terms']) ? array_values(array_filter(array_map('strval', $row['terms']))) : array();
+        $tags = isset($row['concept_tags']) && is_array($row['concept_tags']) ? array_values(array_filter(array_map('strval', $row['concept_tags']))) : array();
+        if ($bugShape === '' && $theme === '' && $surface === '' && $lead === '') continue;
+        $out[] = array(
+            'bug_shape' => $bugShape,
+            'theme' => $theme,
+            'ui_surface' => $surface,
+            'language' => $lang,
+            'lead' => $lead,
+            'terms' => $terms,
+            'concept_tags' => $tags,
+        );
+        if (count($out) >= $max) break;
+    }
+    return $out;
+}
+
+function spot_norm_text(string $text): string
+{
+    $text = strtolower(trim($text));
+    if ($text === '') return '';
+    $text = preg_replace('/https?:\/\/\S+/i', ' ', $text) ?? $text;
+    $text = preg_replace('/[^a-z0-9\s]+/i', ' ', $text) ?? $text;
+    $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+    return trim($text);
+}
+
+function spot_text_terms(string $text, int $max = 18): array
+{
+    $text = spot_norm_text($text);
+    if ($text === '') return array();
+    $stop = array_fill_keys(array(
+        'const','let','var','function','return','class','new','true','false','null','undefined',
+        'this','that','with','from','into','your','have','just','will','when','then','else',
+        'they','them','what','how','there','here','code','snippet','spot','bug','reply','broken',
+        'would','should','could','make','gets','keep','very','really','about','because'
+    ), true);
+    $parts = preg_split('/\s+/', $text) ?: array();
+    $out = array();
+    foreach ($parts as $part) {
+        $p = trim((string)$part);
+        if ($p === '' || strlen($p) < 3) continue;
+        if (isset($stop[$p])) continue;
+        if (!in_array($p, $out, true)) $out[] = $p;
+        if (count($out) >= $max) break;
+    }
+    return $out;
+}
+
+function spot_overlap_ratio(array $a, array $b): float
+{
+    $a = array_values(array_unique(array_filter(array_map('strval', $a))));
+    $b = array_values(array_unique(array_filter(array_map('strval', $b))));
+    if ($a === array() || $b === array()) return 0.0;
+    $sa = array_fill_keys($a, true);
+    $sb = array_fill_keys($b, true);
+    $intersection = 0;
+    foreach ($sa as $k => $_) {
+        if (isset($sb[$k])) $intersection++;
+    }
+    $union = count($sa) + count($sb) - $intersection;
+    if ($union <= 0) return 0.0;
+    return (float)$intersection / (float)$union;
+}
+
+function spot_case_similarity_check(array $candidate, array $state): array
+{
+    $recent = spot_recent_case_records($state, 18);
+    if ($recent === array()) {
+        return array('similar' => false, 'reason' => '');
+    }
+
+    $candShape = spot_norm_text((string)($candidate['bug_shape'] ?? ''));
+    $candTheme = spot_norm_text((string)($candidate['theme'] ?? ''));
+    $candSurface = spot_norm_text((string)($candidate['ui_surface'] ?? ''));
+    $candLead = spot_norm_text((string)($candidate['lead'] ?? ''));
+    $candLang = spot_norm_text((string)($candidate['language'] ?? ''));
+    $candTerms = spot_text_terms((string)($candidate['code'] ?? '') . "\n" . (string)($candidate['lead'] ?? ''), 20);
+    $candTags = array_values(array_unique(array_filter(array_map(static function ($v): string {
+        return spot_norm_text((string)$v);
+    }, isset($candidate['concept_tags']) && is_array($candidate['concept_tags']) ? $candidate['concept_tags'] : array()))));
+
+    foreach ($recent as $row) {
+        $rowShape = spot_norm_text((string)($row['bug_shape'] ?? ''));
+        $rowTheme = spot_norm_text((string)($row['theme'] ?? ''));
+        $rowSurface = spot_norm_text((string)($row['ui_surface'] ?? ''));
+        $rowLead = spot_norm_text((string)($row['lead'] ?? ''));
+        $rowLang = spot_norm_text((string)($row['language'] ?? ''));
+        $rowTerms = spot_text_terms(implode(' ', (array)($row['terms'] ?? array())), 20);
+        if ($rowTerms === array()) {
+            $rowTerms = array_values(array_unique(array_filter(array_map(static function ($v): string {
+                return spot_norm_text((string)$v);
+            }, isset($row['terms']) && is_array($row['terms']) ? $row['terms'] : array()))));
+        }
+        $rowTags = array_values(array_unique(array_filter(array_map(static function ($v): string {
+            return spot_norm_text((string)$v);
+        }, isset($row['concept_tags']) && is_array($row['concept_tags']) ? $row['concept_tags'] : array()))));
+
+        if ($candShape !== '' && $rowShape !== '' && $candShape === $rowShape) {
+            return array('similar' => true, 'reason' => 'same bug shape as recent Spot the Bug');
+        }
+        if ($candTheme !== '' && $rowTheme !== '' && $candTheme === $rowTheme && $candSurface !== '' && $rowSurface !== '' && $candSurface === $rowSurface) {
+            return array('similar' => true, 'reason' => 'same theme and surface as recent Spot the Bug');
+        }
+        if ($candLang !== '' && $candLang === $rowLang && $candLead !== '' && $candLead === $rowLead) {
+            return array('similar' => true, 'reason' => 'same lead and language as recent Spot the Bug');
+        }
+        if ($candTags !== array() && $rowTags !== array()) {
+            $tagOverlap = spot_overlap_ratio($candTags, $rowTags);
+            if ($tagOverlap >= 0.67 && count(array_intersect($candTags, $rowTags)) >= 2) {
+                return array('similar' => true, 'reason' => 'same concept tags as recent Spot the Bug');
+            }
+        }
+        if ($candTerms !== array() && $rowTerms !== array()) {
+            $termOverlap = spot_overlap_ratio($candTerms, $rowTerms);
+            if ($candLang !== '' && $candLang === $rowLang && $termOverlap >= 0.58) {
+                return array('similar' => true, 'reason' => 'code terms overlap too much with recent Spot the Bug');
+            }
+        }
+    }
+
+    return array('similar' => false, 'reason' => '');
+}
+
 function spot_source_seeds(): array
 {
     return array(
@@ -198,6 +333,9 @@ function spot_fallback_cases(): array
             'language' => 'js',
             'difficulty' => 'Easy',
             'theme' => 'animation',
+            'bug_shape' => 'missing assignment in animation loop',
+            'ui_surface' => 'moving sprite position',
+            'concept_tags' => array('animation', 'assignment', 'requestanimationframe'),
             'snippet_size' => 'tiny',
             'source_name' => 'kirupa Animating with requestAnimationFrame',
             'source_url' => 'https://www.kirupa.com/animations/ensuring_consistent_animation_speeds.htm',
@@ -208,6 +346,9 @@ function spot_fallback_cases(): array
             'language' => 'js',
             'difficulty' => 'Hard',
             'theme' => 'logic',
+            'bug_shape' => 'inverted duplicate check return',
+            'ui_surface' => 'duplicate finder helper',
+            'concept_tags' => array('set', 'logic', 'duplicates'),
             'snippet_size' => 'long',
             'source_name' => 'MDN for...of',
             'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for...of',
@@ -218,6 +359,9 @@ function spot_fallback_cases(): array
             'language' => 'js',
             'difficulty' => 'Medium',
             'theme' => 'text-manipulation',
+            'bug_shape' => 'wrong string method casing',
+            'ui_surface' => 'tag normalizer',
+            'concept_tags' => array('string', 'method', 'normalization'),
             'snippet_size' => 'short',
             'source_name' => 'MDN String.trim',
             'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/trim',
@@ -228,6 +372,9 @@ function spot_fallback_cases(): array
             'language' => 'js',
             'difficulty' => 'Easy',
             'theme' => 'dom-events',
+            'bug_shape' => 'handler invoked during registration',
+            'ui_surface' => 'save button click',
+            'concept_tags' => array('events', 'handler', 'dom'),
             'snippet_size' => 'short',
             'source_name' => 'MDN addEventListener',
             'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener',
@@ -238,6 +385,9 @@ function spot_fallback_cases(): array
             'language' => 'html',
             'difficulty' => 'Extremely Easy',
             'theme' => 'forms',
+            'bug_shape' => 'missing submit prevention',
+            'ui_surface' => 'email signup form',
+            'concept_tags' => array('form', 'submit', 'preventdefault'),
             'snippet_size' => 'tiny',
             'source_name' => 'MDN Forms',
             'source_url' => 'https://developer.mozilla.org/en-US/docs/Learn_web_development/Extensions/Forms',
@@ -248,11 +398,105 @@ function spot_fallback_cases(): array
             'language' => 'css',
             'difficulty' => 'Extremely Hard',
             'theme' => 'css-layout',
+            'bug_shape' => 'grid span exceeds track count',
+            'ui_surface' => 'dashboard card grid',
+            'concept_tags' => array('css-grid', 'layout', 'span'),
             'snippet_size' => 'xlong',
             'source_name' => 'MDN Grid Layout',
             'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout',
             'lead' => 'Layout bug is hidden in plain sight.',
             'code' => ".dashboard {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(120px, 1fr));\n  gap: 12px;\n}\n.card {\n  grid-column: span 4;\n  padding: 12px;\n  border: 1px solid #ddd;\n}\n@media (max-width: 700px) {\n  .dashboard {\n    grid-template-columns: 1fr;\n  }\n}",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Medium',
+            'theme' => 'canvas',
+            'bug_shape' => 'wrong canvas api method name',
+            'ui_surface' => 'particle trail canvas',
+            'concept_tags' => array('canvas', 'api', 'drawing'),
+            'snippet_size' => 'short',
+            'source_name' => 'kirupa Canvas Intro',
+            'source_url' => 'https://www.kirupa.com/html5/getting_started_with_canvas.htm',
+            'lead' => 'Tiny canvas bug in this one.',
+            'code' => "const canvas = document.querySelector('canvas');\nconst ctx = canvas.getContext('2d');\nctx.fillStyle = '#ff6b6b';\nctx.fillReact(20, 20, 60, 60);",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Easy',
+            'theme' => 'color',
+            'bug_shape' => 'off by one hex slice',
+            'ui_surface' => 'theme color parser',
+            'concept_tags' => array('color', 'hex', 'slice'),
+            'snippet_size' => 'short',
+            'source_name' => 'MDN String.slice',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/slice',
+            'lead' => 'Color helper has one tiny bug.',
+            'code' => "function normalizeHex(hex) {\n  const value = hex.startsWith('#') ? hex : '#' + hex;\n  return value.slice(0, 6);\n}\n\nconsole.log(normalizeHex('#12abef'));",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Medium',
+            'theme' => 'arrays',
+            'bug_shape' => 'boolean sort comparator',
+            'ui_surface' => 'scoreboard sorter',
+            'concept_tags' => array('array', 'sort', 'comparator'),
+            'snippet_size' => 'short',
+            'source_name' => 'MDN Array.sort',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/sort',
+            'lead' => 'Sorting bug hiding in here.',
+            'code' => "const scores = [12, 4, 30, 21];\nscores.sort((a, b) => a > b);\n\nconsole.log(scores);",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Easy',
+            'theme' => 'dom',
+            'bug_shape' => 'wrong dom selector api for multiple nodes',
+            'ui_surface' => 'todo list counter',
+            'concept_tags' => array('dom', 'selector', 'nodelist'),
+            'snippet_size' => 'short',
+            'source_name' => 'MDN querySelectorAll',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/API/Document/querySelectorAll',
+            'lead' => 'DOM bug, pretty sneaky.',
+            'code' => "const items = document.querySelector('.todo li');\nconsole.log(items.length);\n",
+        ),
+        array(
+            'language' => 'css',
+            'difficulty' => 'Medium',
+            'theme' => 'animation',
+            'bug_shape' => 'missing transition time unit',
+            'ui_surface' => 'hover lift card',
+            'concept_tags' => array('css', 'transition', 'animation'),
+            'snippet_size' => 'tiny',
+            'source_name' => 'MDN transition',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/CSS/transition',
+            'lead' => 'Animation bug in plain sight.',
+            'code' => ".card {\n  transition: transform 200 ease;\n}\n.card:hover {\n  transform: translateY(-4px);\n}",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Medium',
+            'theme' => 'regex',
+            'bug_shape' => 'string used instead of regex',
+            'ui_surface' => 'slug formatter',
+            'concept_tags' => array('regex', 'replace', 'strings'),
+            'snippet_size' => 'short',
+            'source_name' => 'MDN String.replace',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replace',
+            'lead' => 'One regex bug in this formatter.',
+            'code' => "function slugify(title) {\n  return title.trim().toLowerCase().replace('/\\s+/g', '-');\n}\n\nconsole.log(slugify('Hello World Again'));",
+        ),
+        array(
+            'language' => 'js',
+            'difficulty' => 'Medium',
+            'theme' => 'objects',
+            'bug_shape' => 'wrong destructured property name',
+            'ui_surface' => 'card size helper',
+            'concept_tags' => array('objects', 'destructuring', 'properties'),
+            'snippet_size' => 'short',
+            'source_name' => 'MDN Destructuring',
+            'source_url' => 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring',
+            'lead' => 'Object bug, one line off.',
+            'code' => "const card = { width: 320, height: 180 };\nconst { widht, height } = card;\n\nconsole.log(widht * height);",
         ),
     );
 }
@@ -341,6 +585,23 @@ function spot_generate_case_llm(array $state): array
     $targetSize = spot_pick_size($state);
     $recentThemes = spot_recent_vals($state, 'recent_themes', 10);
     $themeAvoid = $recentThemes === array() ? '(none)' : implode(', ', $recentThemes);
+    $recentShapes = spot_recent_vals($state, 'recent_bug_shapes', 12);
+    $shapeAvoid = $recentShapes === array() ? '(none)' : implode('; ', $recentShapes);
+    $recentSurfaces = spot_recent_vals($state, 'recent_surfaces', 12);
+    $surfaceAvoid = $recentSurfaces === array() ? '(none)' : implode('; ', $recentSurfaces);
+    $recentCases = spot_recent_case_records($state, 8);
+    $recentCaseSummary = array();
+    foreach ($recentCases as $row) {
+        $line = array();
+        $shape = trim((string)($row['bug_shape'] ?? ''));
+        $surface = trim((string)($row['ui_surface'] ?? ''));
+        $theme = trim((string)($row['theme'] ?? ''));
+        if ($shape !== '') $line[] = 'shape=' . $shape;
+        if ($surface !== '') $line[] = 'surface=' . $surface;
+        if ($theme !== '') $line[] = 'theme=' . $theme;
+        if ($line !== array()) $recentCaseSummary[] = implode(', ', $line);
+    }
+    $recentCaseBlock = $recentCaseSummary === array() ? '(none)' : implode(" | ", $recentCaseSummary);
     $attemptErrors = array();
     $triedThemes = array();
 
@@ -364,18 +625,25 @@ function spot_generate_case_llm(array $state): array
             . "Target difficulty: {$targetDifficulty}\n"
             . "Target snippet size: {$targetSize}\n"
             . "Recent themes to avoid repeating: {$themeAvoid}\n"
+            . "Recent bug shapes to avoid repeating: {$shapeAvoid}\n"
+            . "Recent UI surfaces to avoid repeating: {$surfaceAvoid}\n"
+            . "Recent case summaries to avoid echoing: {$recentCaseBlock}\n"
             . "Do not use cache/Map/LRU/memoization examples unless the theme is explicitly collections.\n"
-            . "Prefer variety across animation, logic, text manipulation, DOM events, forms, CSS layout, and array/object basics.\n"
-            . "Return JSON with keys: language, lead, code, difficulty, theme, source_name, source_url, snippet_size.\n"
+            . "Prefer variety across animation, logic, text manipulation, DOM events, forms, CSS layout, arrays/objects, canvas, color, and little UI interactions.\n"
+            . "Return JSON with keys: language, lead, code, difficulty, theme, source_name, source_url, snippet_size, bug_shape, ui_surface, concept_tags.\n"
             . "Rules:\n"
             . "- language must be one of: js, ts, html, css.\n"
             . "- lead must be one short sentence (4-12 words), casual, no emoji.\n"
             . "- difficulty must be one of: Extremely Easy, Easy, Medium, Hard, Extremely Hard.\n"
             . "- snippet_size must be one of: tiny, short, medium, long, xlong.\n"
+            . "- bug_shape must be a short lowercase label naming the actual bug archetype, like immediate handler invocation, wrong method name, missing preventdefault, stale closure, bad grid span, off by one, wrong property access.\n"
+            . "- ui_surface must be a short lowercase label for where the bug lives, like search input, card grid, submit form, canvas loop, color picker, drag handle.\n"
+            . "- concept_tags must be an array of 2-4 short lowercase tags.\n"
             . "- code length target by snippet_size: tiny=3-5 lines, short=6-9 lines, medium=10-15 lines, long=16-24 lines, xlong=25-40 lines.\n"
             . "- code must contain exactly one deliberate bug.\n"
             . "- no answer, no explanation, no comments revealing the bug.\n"
             . "- avoid repeating recent leads: {$avoid}\n"
+            . "- do not reuse the same bug_shape or ui_surface from the recent history.\n"
             . "- output JSON only, no markdown.";
 
         $payload = array(
@@ -409,6 +677,9 @@ function spot_generate_case_llm(array $state): array
         $pickedSourceName = trim((string)($obj['source_name'] ?? $sourceName));
         $pickedSourceUrl = trim((string)($obj['source_url'] ?? $sourceUrl));
         $pickedSize = strtolower(trim((string)($obj['snippet_size'] ?? $targetSize)));
+        $bugShape = strtolower(trim((string)($obj['bug_shape'] ?? '')));
+        $uiSurface = strtolower(trim((string)($obj['ui_surface'] ?? '')));
+        $conceptTags = isset($obj['concept_tags']) && is_array($obj['concept_tags']) ? $obj['concept_tags'] : array();
         if ($lead === '' || $code === '') {
             $attemptErrors[] = 'OpenAI response missing fields';
             continue;
@@ -427,9 +698,17 @@ function spot_generate_case_llm(array $state): array
             'source_name' => $pickedSourceName,
             'source_url' => $pickedSourceUrl,
             'snippet_size' => $pickedSize,
+            'bug_shape' => $bugShape,
+            'ui_surface' => $uiSurface,
+            'concept_tags' => $conceptTags,
         );
         if (spot_is_overused_case($candidate) && $attempt < 4) {
             $attemptErrors[] = 'Rejected repetitive cache/map style case';
+            continue;
+        }
+        $similarity = spot_case_similarity_check($candidate, $state);
+        if (!empty($similarity['similar']) && $attempt < 4) {
+            $attemptErrors[] = 'Rejected near-duplicate case: ' . (string)($similarity['reason'] ?? 'too similar');
             continue;
         }
 
@@ -456,6 +735,9 @@ function spot_pick_case(array $state): array
         if (!isset($case['snippet_size']) || trim((string)$case['snippet_size']) === '') $case['snippet_size'] = 'medium';
         if (!isset($case['source_name'])) $case['source_name'] = '';
         if (!isset($case['source_url'])) $case['source_url'] = '';
+        if (!isset($case['bug_shape'])) $case['bug_shape'] = '';
+        if (!isset($case['ui_surface'])) $case['ui_surface'] = '';
+        if (!isset($case['concept_tags']) || !is_array($case['concept_tags'])) $case['concept_tags'] = array();
         $case['_target_difficulty'] = $targetDifficulty;
         $case['_target_size'] = $targetSize;
         return $case;
@@ -491,14 +773,39 @@ function spot_pick_case(array $state): array
     }
     if ($pool === array()) $pool = $fallback;
 
-    $idx = mt_rand(0, count($pool) - 1);
-    $picked = $pool[$idx];
+    shuffle($pool);
+    $candidates = array_merge($pool, $fallback);
+    foreach ($candidates as $picked) {
+        if (!is_array($picked)) continue;
+        $picked['language'] = spot_norm_lang((string)($picked['language'] ?? 'js'));
+        if (!isset($picked['theme'])) $picked['theme'] = 'javascript';
+        if (!isset($picked['difficulty'])) $picked['difficulty'] = 'Medium';
+        if (!isset($picked['snippet_size'])) $picked['snippet_size'] = 'medium';
+        if (!isset($picked['source_name'])) $picked['source_name'] = '';
+        if (!isset($picked['source_url'])) $picked['source_url'] = '';
+        if (!isset($picked['bug_shape'])) $picked['bug_shape'] = '';
+        if (!isset($picked['ui_surface'])) $picked['ui_surface'] = '';
+        if (!isset($picked['concept_tags']) || !is_array($picked['concept_tags'])) $picked['concept_tags'] = array();
+        $similarity = spot_case_similarity_check($picked, $state);
+        if (!empty($similarity['similar'])) {
+            continue;
+        }
+        $picked['_origin'] = 'fallback';
+        $picked['_target_difficulty'] = $targetDifficulty;
+        $picked['_target_size'] = $targetSize;
+        return $picked;
+    }
+
+    $picked = $fallback[mt_rand(0, count($fallback) - 1)];
     $picked['language'] = spot_norm_lang((string)($picked['language'] ?? 'js'));
     if (!isset($picked['theme'])) $picked['theme'] = 'javascript';
     if (!isset($picked['difficulty'])) $picked['difficulty'] = 'Medium';
     if (!isset($picked['snippet_size'])) $picked['snippet_size'] = 'medium';
     if (!isset($picked['source_name'])) $picked['source_name'] = '';
     if (!isset($picked['source_url'])) $picked['source_url'] = '';
+    if (!isset($picked['bug_shape'])) $picked['bug_shape'] = '';
+    if (!isset($picked['ui_surface'])) $picked['ui_surface'] = '';
+    if (!isset($picked['concept_tags']) || !is_array($picked['concept_tags'])) $picked['concept_tags'] = array();
     $picked['_origin'] = 'fallback';
     $picked['_target_difficulty'] = $targetDifficulty;
     $picked['_target_size'] = $targetSize;
@@ -616,6 +923,9 @@ if ($dryRun) {
             'category_id' => (int)KONVO_WEBDEV_CATEGORY_ID,
             'difficulty' => (string)($case['difficulty'] ?? ''),
             'theme' => (string)($case['theme'] ?? ''),
+            'bug_shape' => (string)($case['bug_shape'] ?? ''),
+            'ui_surface' => (string)($case['ui_surface'] ?? ''),
+            'concept_tags' => isset($case['concept_tags']) && is_array($case['concept_tags']) ? $case['concept_tags'] : array(),
             'snippet_size' => (string)($case['snippet_size'] ?? ''),
             'source_name' => (string)($case['source_name'] ?? ''),
             'source_url' => (string)($case['source_url'] ?? ''),
@@ -658,6 +968,16 @@ array_unshift($recentThemes, strtolower(trim((string)($case['theme'] ?? ''))));
 $recentThemes = array_values(array_filter(array_unique(array_map('strval', $recentThemes))));
 $recentThemes = array_slice($recentThemes, 0, 20);
 
+$recentShapes = isset($state['recent_bug_shapes']) && is_array($state['recent_bug_shapes']) ? $state['recent_bug_shapes'] : array();
+array_unshift($recentShapes, strtolower(trim((string)($case['bug_shape'] ?? ''))));
+$recentShapes = array_values(array_filter(array_unique(array_map('strval', $recentShapes))));
+$recentShapes = array_slice($recentShapes, 0, 24);
+
+$recentSurfaces = isset($state['recent_surfaces']) && is_array($state['recent_surfaces']) ? $state['recent_surfaces'] : array();
+array_unshift($recentSurfaces, strtolower(trim((string)($case['ui_surface'] ?? ''))));
+$recentSurfaces = array_values(array_filter(array_unique(array_map('strval', $recentSurfaces))));
+$recentSurfaces = array_slice($recentSurfaces, 0, 24);
+
 $recentDiff = isset($state['recent_difficulties']) && is_array($state['recent_difficulties']) ? $state['recent_difficulties'] : array();
 array_unshift($recentDiff, strtolower(trim((string)($case['difficulty'] ?? ''))));
 $recentDiff = array_values(array_filter(array_unique(array_map('strval', $recentDiff))));
@@ -673,6 +993,39 @@ array_unshift($recentSources, strtolower(trim((string)($case['source_name'] ?? '
 $recentSources = array_values(array_filter(array_unique(array_map('strval', $recentSources))));
 $recentSources = array_slice($recentSources, 0, 20);
 
+$recentCases = isset($state['recent_cases']) && is_array($state['recent_cases']) ? $state['recent_cases'] : array();
+array_unshift($recentCases, array(
+    'bug_shape' => strtolower(trim((string)($case['bug_shape'] ?? ''))),
+    'theme' => strtolower(trim((string)($case['theme'] ?? ''))),
+    'ui_surface' => strtolower(trim((string)($case['ui_surface'] ?? ''))),
+    'language' => strtolower(trim((string)($case['language'] ?? ''))),
+    'lead' => trim((string)($case['lead'] ?? '')),
+    'terms' => spot_text_terms((string)($case['code'] ?? '') . "\n" . (string)($case['lead'] ?? ''), 20),
+    'concept_tags' => array_values(array_unique(array_filter(array_map(static function ($v): string {
+        return spot_norm_text((string)$v);
+    }, isset($case['concept_tags']) && is_array($case['concept_tags']) ? $case['concept_tags'] : array())))),
+));
+$cleanCases = array();
+foreach ($recentCases as $row) {
+    if (!is_array($row)) continue;
+    $shape = strtolower(trim((string)($row['bug_shape'] ?? '')));
+    $theme = strtolower(trim((string)($row['theme'] ?? '')));
+    $surface = strtolower(trim((string)($row['ui_surface'] ?? '')));
+    $lang = strtolower(trim((string)($row['language'] ?? '')));
+    $lead = trim((string)($row['lead'] ?? ''));
+    if ($shape === '' && $theme === '' && $surface === '' && $lead === '') continue;
+    $cleanCases[] = array(
+        'bug_shape' => $shape,
+        'theme' => $theme,
+        'ui_surface' => $surface,
+        'language' => $lang,
+        'lead' => $lead,
+        'terms' => isset($row['terms']) && is_array($row['terms']) ? array_values(array_filter(array_map('strval', $row['terms']))) : array(),
+        'concept_tags' => isset($row['concept_tags']) && is_array($row['concept_tags']) ? array_values(array_filter(array_map('strval', $row['concept_tags']))) : array(),
+    );
+}
+$cleanCases = array_slice($cleanCases, 0, 24);
+
 $state['last_number'] = $nextNumber;
 $state['last_posted_at'] = time();
 $state['last_topic_id'] = $topicId;
@@ -680,9 +1033,12 @@ $state['last_post_number'] = $postNumber;
 $state['last_title'] = $title;
 $state['recent_leads'] = $cleanLeads;
 $state['recent_themes'] = $recentThemes;
+$state['recent_bug_shapes'] = $recentShapes;
+$state['recent_surfaces'] = $recentSurfaces;
 $state['recent_difficulties'] = $recentDiff;
 $state['recent_sizes'] = $recentSizes;
 $state['recent_sources'] = $recentSources;
+$state['recent_cases'] = $cleanCases;
 spot_save_state($state);
 
 spot_out(200, array(
