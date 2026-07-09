@@ -537,7 +537,8 @@ function casual_fetch_url(string $url): array
     curl_setopt_array($ch, array(
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT => 10,
+        CURLOPT_TIMEOUT => 4,
+        CURLOPT_CONNECTTIMEOUT => 2,
         CURLOPT_USERAGENT => 'konvo-casual-topic-worker/2.0',
     ));
     $body = curl_exec($ch);
@@ -704,9 +705,14 @@ function casual_parse_feed_items(string $xml, int $maxItems): array
 function casual_fetch_news_seed_candidates(int $max = 30): array
 {
     $all = array();
-    foreach (casual_feed_sources() as $source) {
+    $sources = casual_feed_sources();
+    shuffle($sources);
+    $processed = 0;
+    foreach ($sources as $source) {
+        if ($processed >= 6) break;
         $feed = trim((string)($source['feed'] ?? ''));
         if ($feed === '') continue;
+        $processed++;
         $res = casual_fetch_url($feed);
         if (empty($res['ok'])) continue;
         $items = casual_parse_feed_items((string)($res['body'] ?? ''), 6);
@@ -725,6 +731,7 @@ function casual_fetch_news_seed_candidates(int $max = 30): array
             if (casual_item_looks_controversial_topic($candidate)) continue;
             if (!casual_text_is_english_like($candidate['title'] . "\n" . $candidate['summary'])) continue;
             $all[] = $candidate;
+            if (count($all) >= $max) break 2;
         }
     }
 
@@ -1766,7 +1773,7 @@ if (!$dryRun && !$force) {
         ));
     }
 }
-$recentForumTitles = casual_fetch_latest_topic_titles(120);
+$recentForumTitles = casual_fetch_latest_topic_titles(60);
 
 $attempts = array();
 $generated = null;
@@ -1774,8 +1781,8 @@ $bestFallback = null;
 $bestFallbackScore = -1.0;
 $extraAvoidance = '';
 $requestStartTs = isset($_SERVER['REQUEST_TIME_FLOAT']) ? (float)$_SERVER['REQUEST_TIME_FLOAT'] : microtime(true);
-for ($i = 0; $i < 4; $i++) {
-    if ((microtime(true) - $requestStartTs) > 32.0) {
+for ($i = 0; $i < 2; $i++) {
+    if ((microtime(true) - $requestStartTs) > 24.0) {
         break;
     }
     $strict = $i > 0;
@@ -1787,7 +1794,16 @@ for ($i = 0; $i < 4; $i++) {
         }
     }
     if (!empty($res['ok'])) {
-        $gate = casual_uniqueness_gate_with_llm((string)$res['title'], (string)$res['raw'], $recent, $recentForumTitles);
+        $localNovel = !casual_candidate_too_close_to_recent_local((string)$res['title'], (string)$res['raw'], $recent)
+            && !casual_title_too_similar_to_recent((string)$res['title'], $recentForumTitles);
+        $gate = array(
+            'ok' => true,
+            'passes' => $localNovel,
+            'score' => $localNovel ? 5.0 : 2.0,
+            'reason' => $localNovel ? 'fast_local_uniqueness_pass' : 'fast_local_uniqueness_reject',
+            'closest_match' => '',
+            'rewrite_hint' => $localNovel ? '' : 'Pick a different angle and wording from recent topics.',
+        );
         $res['uniqueness_gate'] = $gate;
         if (!empty($gate['ok']) && empty($gate['passes'])) {
             $score = (float)($gate['score'] ?? 0.0);
