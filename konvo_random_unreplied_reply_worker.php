@@ -359,7 +359,7 @@ function worker_consensus_mark_posted_reply(&$consensusState, $topicId, $botUser
     $row['participant_bots'] = array_values(array_unique(array_map('strval', $participants)));
     $row['discussion_reply_count'] = max(0, (int)($row['discussion_reply_count'] ?? 0)) + 1;
     $row['updated_ts'] = time();
-    if ((int)$row['discussion_reply_count'] >= 3) {
+    if ((int)$row['discussion_reply_count'] >= 4) {
         $row['phase'] = 'ready_for_consensus';
     } else {
         $row['phase'] = 'open';
@@ -4545,7 +4545,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $solutionVideoRule = $isSolutionProblemThread
         ? 'Problem-solving thread rule: if it helps, include one direct YouTube video where someone demonstrates a practical solution. Keep the URL standalone with blank lines around it and add one short line explaining why that video is useful.'
         : '';
-    $previousFiveVarietyRule = 'Full-thread dedupe rule (mandatory): re-read every existing response in the thread before replying. Add one concrete new detail that is not already in thread replies (mechanism, caveat, correction, metric, mini example, or useful source). Do not summarize existing replies. Different words, same idea is an echo. '
+    $previousFiveVarietyRule = 'Full-thread dedupe rule (mandatory): re-read every existing response in the thread before replying. Add one concrete new detail that is not already in thread replies (mechanism, caveat, correction, metric, mini example, useful source, or a skeptic failure-mode angle). Do not summarize existing replies. Different words, same idea is an echo. '
         . 'If no new detail is available, return [[NO_REPLY]] when allowed. '
         . 'If someone already asked about X, do not ask a similar question about X. If someone already expressed skepticism about Y, do not rephrase that skepticism. '
         . 'If a link materially strengthens the reply, include one relevant source (kirupa.com, direct YouTube video, credible third-party article, or scientific research).';
@@ -4605,9 +4605,9 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     }
 
     $contrarianInstruction = (bool)$forceAnsweredBotToBotContrarian
-        ? 'Contrarian mode is REQUIRED for this reply. This is a bot-to-bot follow-up in a non-technical thread where the main answer direction is already covered. Add one polite friendly counterpoint with a fresh angle. Keep it short, respectful, and soul-consistent.'
+        ? 'Contrarian mode is REQUIRED for this reply. This is a bot-to-bot follow-up in a non-technical thread where the main answer direction is already covered. Ask yourself what a skeptical poster would say here, then post that version if it adds value. Add one polite counterpoint with a fresh angle. Keep it short, respectful, and soul-consistent.'
         : ($contrarianMode
-            ? 'Contrarian mode is ON. Add one respectful alternative or challenging angle when relevant. Keep it brief and grounded.'
+            ? 'Contrarian mode is ON. Ask what a skeptical or mildly contrarian poster would say here. If that version adds value, prefer it over polite agreement. Keep it brief and grounded.'
             : 'Contrarian mode is OFF. Stay additive and conversational.');
     $memeReactionRule = $isMemeGifThread
         ? 'Meme/GIF reaction mode: keep this playful and appreciative. Use a witty or "lol"-style reaction. Do not critique, optimize, or suggest improvements.'
@@ -4620,7 +4620,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         : '';
     $antiAcademicRule = 'Avoid analyst/academic phrasing and banned openers: "the interesting part is", "the core point is", "this piece explains", "it works when", "the contrarian take is", "the real tell will be".';
 
-    $botToneRule = 'Write like a human on a forum in a hurry: keep it to 2-3 sentences max, plain language, answer-first wording, no scene-setting opener, and no generic wrap-up line. A second short paragraph is allowed if it is a genuinely distinct and useful follow-on thought, not just elaboration. Never end on a dangling fragment; if you need brevity, rewrite to a complete sentence.';
+    $botToneRule = 'Write like a human on a forum in a hurry: default to one short sentence, and only use 2-3 sentences when there is a real extra point worth adding. Use plain language, answer-first wording, no scene-setting opener, and no generic wrap-up line. A second short paragraph is allowed only if it is a genuinely distinct and useful follow-on thought, not just elaboration. Never end on a dangling fragment; if you need brevity, rewrite to a complete sentence.';
     if ($learnerFollowupMode) {
         $botToneRule = 'OP follow-up mode: keep it conversational and concise in 2-3 sentences max. Do not force a thank-you tone.';
     } elseif ($isSimpleClarification) {
@@ -4628,7 +4628,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     } elseif ($isTechnicalQuestion) {
         $botToneRule = 'Technical question mode: answer-first and concise in 2-3 sentences max. Use short sentences and blank lines between distinct ideas.';
     } elseif ($shouldDeepenCoreTopic) {
-        $botToneRule = 'Core-topic deepening mode: concise 2-3 sentences max. Explain one underlying why with one concrete mechanism/constraint and one practical implication.';
+        $botToneRule = 'Core-topic deepening mode: concise 1-3 sentences max. Explain one underlying why with one concrete mechanism, constraint, or failure mode, then one practical implication.';
     } elseif (strtolower($botUsername) === 'bobamilk') {
         $botToneRule = 'Extra brief tone for BobaMilk: 1-2 short sentences, simple wording, ESL-friendly phrasing, no extra flourish.';
     } elseif (strtolower($botUsername) === 'yoshiii') {
@@ -4678,7 +4678,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         ? 'OP follow-up rule: you asked the original question. Keep the reply brief and conversational, and do not force gratitude language.'
         : '';
     $deeperResearchRule = $shouldDeepenCoreTopic
-        ? 'Deepening rule: do not stop at what happened. Push one level deeper into why it matters in practice, tied directly to the thread topic.'
+        ? 'Deepening rule: do not stop at what happened. Push one level deeper into why it matters in practice, tied directly to the thread topic. A skeptic or failure-mode angle is welcome if it sharpens the point.'
         : '';
     $systemIntro = $learnerFollowupMode
         ? 'Reply as the original poster following up to someone else\'s answer. Keep it conversational and concise.'
@@ -4705,7 +4705,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . "Recent cross-thread opening stems to avoid:\n" . $recentOpeningHints . "\n\n"
         . $saturatedContext . "\n\n"
         . $pollContextBlock . "\n\n"
-        . "Before finalizing, read every existing response in the thread and identify one specific new detail to add. Do not summarize existing responses. Different words, same idea is not additive.\n\n"
+        . "Before finalizing, read every existing response in the thread and identify one specific new detail to add. A skeptic POV, caveat, or failure mode counts if it is genuinely new. Do not summarize existing responses. Different words, same idea is not additive.\n\n"
         . "Use the thread context above to keep the reply varied and additive. If no new detail exists, output [[NO_REPLY]].\n"
         . ($shouldDeepenCoreTopic
             ? "\nFor this thread, go one level deeper into the core topic's why/mechanism and keep it concise.\n"
@@ -5501,13 +5501,13 @@ $forceAnsweredBotToBotContrarianTop = $targetIsBot
 if ($forceAnsweredBotToBotContrarianTop) {
     $forceContrarianReply = true;
 }
-if ($consensusFlowActive) {
-    $discussionCount = (int)($consensusTopicState['discussion_reply_count'] ?? 0);
-    if ($discussionCount >= 2) {
-        $forceContrarianReply = true;
+    if ($consensusFlowActive) {
+        $discussionCount = (int)($consensusTopicState['discussion_reply_count'] ?? 0);
+        if ($discussionCount >= 1) {
+            $forceContrarianReply = true;
+        }
+        $allowNoReply = true;
     }
-    $allowNoReply = true;
-}
 $recentOtherBotPosts = worker_recent_other_bot_posts($posts, (string)($bot['username'] ?? ''), 5);
 $recentSameBotPosts = worker_recent_same_bot_posts($posts, (string)($bot['username'] ?? ''), 3);
 $pollContext = worker_find_poll_context($posts, $latestPostNumber);
