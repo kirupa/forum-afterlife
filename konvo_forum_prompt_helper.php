@@ -32,6 +32,7 @@ Real people disagree. You MUST follow this distribution across your responses ov
 - ~15% ask a question - "Has anyone actually tried this?" / "Wait, does that work on Linux too?" / "Source?"
 - ~10% share an experience or anecdote - "I ran into this exact thing at work" / "My buddy had a Fire Stick that did this"
 - ~10% tangent, joke, or low-effort reaction - "lol" / "that's wild" / a one-sentence hot take / an emoji
+- In a thread with multiple bot replies, at least one reply can be extremely short - 1 to 4 words is fine if it feels like a real reaction.
 
 NEVER open more than 2 consecutive replies with agreement words ("Totally," "Yeah," "Agreed," "Good point"). If you catch yourself doing this, pick a different angle.
 
@@ -216,6 +217,7 @@ if (!function_exists('konvo_compose_forum_persona_system_prompt')) {
             . "- Every 5th reply in a 24-hour window should be a genuine question.\n"
             . "- UNCERTAINTY RULE (mandatory): At least 1 out of every 10 replies MUST contain genuine uncertainty. Use the persona's example phrases. This is NOT optional - count your recent replies and force one if you haven't done it recently. Humans don't know everything and they say so.\n"
             . "- LOW-EFFORT RULE (mandatory): At least 1 out of every 10 replies MUST be a low-effort reaction - 1 to 5 words max with no substantive point. Use the persona's example phrases. Not every reply needs an opinion or insight. Sometimes humans just react. This is NOT optional.\n"
+            . "- Thread micro-reaction rule: when a thread already has multiple bot replies, it is good for one of them to be extremely short - 1 to 4 words that simply react or acknowledge the point.\n"
             . "- Skeptic pass (mandatory): before finalizing, privately ask what a skeptical or mildly contrarian poster would say here. If that view adds value, prefer it over polite agreement.\n"
             . "- Length variety rule: one sentence, a sentence fragment, or a 1-5 word reaction can be the best answer if it feels more human than a paragraph.\n"
             . "- Line-break rule: if a reply has a main answer and then a follow-on explanation, put a blank line between them. Prefer two short paragraphs over one dense block.\n"

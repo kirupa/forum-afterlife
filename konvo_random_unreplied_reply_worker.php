@@ -3796,6 +3796,42 @@ function worker_is_low_effort_reaction($text)
     return false;
 }
 
+function worker_is_known_bot_username($username)
+{
+    $username = strtolower(trim((string)$username));
+    if ($username === '') return false;
+    global $bots;
+    if (isset($bots) && is_array($bots)) {
+        foreach ($bots as $bot) {
+            $candidate = strtolower(trim((string)($bot['username'] ?? '')));
+            if ($candidate !== '' && $candidate === $username) return true;
+        }
+    }
+    return false;
+}
+
+function worker_thread_short_reply_stats($posts)
+{
+    $stats = array(
+        'bot_reply_count' => 0,
+        'short_bot_reply_count' => 0,
+    );
+    if (!is_array($posts) || $posts === array()) return $stats;
+    foreach ($posts as $post) {
+        if (!is_array($post)) continue;
+        $postNumber = (int)($post['post_number'] ?? 0);
+        if ($postNumber <= 1) continue;
+        $username = (string)($post['username'] ?? '');
+        if (!worker_is_known_bot_username($username)) continue;
+        $stats['bot_reply_count']++;
+        $text = post_content_text($post);
+        if (worker_is_low_effort_reaction($text)) {
+            $stats['short_bot_reply_count']++;
+        }
+    }
+    return $stats;
+}
+
 function worker_uncertainty_phrase_for_bot($botUsername)
 {
     $b = strtolower(trim((string)$botUsername));
@@ -4567,6 +4603,19 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $forceQuestionCadence = (bool)($cadenceMeta['force_question'] ?? false) && !$learnerFollowupMode;
     $forceUncertaintyCadence = (($replyCadenceIndex % 10) === 0) && !$learnerFollowupMode;
     $forceLowEffortCadence = (($replyCadenceIndex % 10) === 5) && !$learnerFollowupMode && !$isTechnicalQuestion && !$targetIsQuestionLike;
+    $recentShortBotReplyPresent = false;
+    foreach (array_merge(is_array($recentBotPosts) ? $recentBotPosts : array(), is_array($recentSameBotPosts) ? $recentSameBotPosts : array()) as $recentBotPost) {
+        if (!is_array($recentBotPost)) continue;
+        if (worker_is_low_effort_reaction(post_content_text($recentBotPost))) {
+            $recentShortBotReplyPresent = true;
+            break;
+        }
+    }
+    $forceThreadMicroReaction = !$learnerFollowupMode
+        && !$isTechnicalQuestion
+        && !$targetIsQuestionLike
+        && ((count(is_array($recentBotPosts) ? $recentBotPosts : array()) + count(is_array($recentSameBotPosts) ? $recentSameBotPosts : array())) >= 2)
+        && !$recentShortBotReplyPresent;
     $questionCadenceRule = $forceQuestionCadence
         ? 'Question cadence rule (mandatory this turn): this must be a genuine question reply with exactly one real question mark.'
         : 'Question cadence rule: about every fifth reply in a 24-hour window should be a genuine question.';
@@ -4584,6 +4633,8 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . "Use the persona's example phrases. Not every reply needs an opinion or insight. Sometimes humans just react. This is NOT optional.";
     if ($forceLowEffortCadence) {
         $lowEffortRule .= ' This turn is mandatory: reply with 1 to 5 words only and no substantive point.';
+    } elseif ($forceThreadMicroReaction) {
+        $lowEffortRule .= ' Thread micro-reaction mode is mandatory this turn: this thread already has multiple full bot replies and no tiny reaction yet, so answer in 1 to 4 words only.';
     }
     $solutionVideoRule = $isSolutionProblemThread
         ? 'Problem-solving thread rule: if it helps, include one direct YouTube video where someone demonstrates a practical solution. Keep the URL standalone with blank lines around it and add one short line explaining why that video is useful.'
@@ -5758,6 +5809,7 @@ $allowNonTechnicalCodeSnippetsTop = $isTechnicalQuestionForGate
     || is_codey_topic($topicTitle, $targetRaw)
     || (function_exists('kirupa_is_technical_text') && kirupa_is_technical_text($topicTitle . "\n" . $targetRaw))
     || $targetHasCodeContextTop;
+$threadShortStatsTop = worker_thread_short_reply_stats($posts);
 $topCadenceMeta = worker_question_cadence_should_force_question((string)($bot['username'] ?? ''));
 $topReplyCadenceIndex = (int)($topCadenceMeta['next_index'] ?? 1);
 $forceQuestionCadenceTop = !empty($topCadenceMeta['force_question']) && !$learnerFollowupModeTop;
@@ -5766,6 +5818,12 @@ $forceLowEffortCadenceTop = (($topReplyCadenceIndex % 10) === 5)
     && !$learnerFollowupModeTop
     && !$isTechnicalQuestionForGate
     && !$targetIsQuestionLike;
+$forceThreadShortReplyTop = !$learnerFollowupModeTop
+    && !$isTechnicalQuestionForGate
+    && !$targetIsQuestionLike
+    && !$targetHasCodeContextTop
+    && ((int)($threadShortStatsTop['bot_reply_count'] ?? 0) >= 2)
+    && ((int)($threadShortStatsTop['short_bot_reply_count'] ?? 0) === 0);
 $qualityGate = array(
     'enabled' => false,
     'available' => true,
@@ -5778,7 +5836,7 @@ $qualityGate = array(
     'reply' => $replyText,
 );
 $bypassQualityGateForLearnerThanks = $learnerFollowupModeTop && worker_is_short_thank_you_ack($replyText);
-$bypassQualityGateForLowEffortCadence = $forceLowEffortCadenceTop;
+$bypassQualityGateForLowEffortCadence = $forceLowEffortCadenceTop || $forceThreadShortReplyTop;
 if (!$bypassQualityGateForLearnerThanks && !$bypassQualityGateForLowEffortCadence) {
     $qualityGate = worker_enforce_reply_quality_gate(
         $bot,
@@ -5791,9 +5849,11 @@ if (!$bypassQualityGateForLearnerThanks && !$bypassQualityGateForLowEffortCadenc
     );
     $replyText = isset($qualityGate['reply']) ? (string)$qualityGate['reply'] : $replyText;
 } else {
-    $bypassReason = $bypassQualityGateForLowEffortCadence
+    $bypassReason = $forceThreadShortReplyTop
+        ? 'Bypassed quality rewrite: thread short-reaction mode.'
+        : ($bypassQualityGateForLowEffortCadence
         ? 'Bypassed quality rewrite: low-effort cadence mode.'
-        : 'Bypassed quality rewrite: OP learner follow-up thank-you mode.';
+        : 'Bypassed quality rewrite: OP learner follow-up thank-you mode.');
     $qualityGate['history'][] = array(
         'round' => 0,
         'score' => 4,
@@ -5825,7 +5885,7 @@ if ($forceUncertaintyCadenceTop && !worker_has_uncertainty_marker($replyText)) {
     $replyText = normalize_signature($replyText, isset($bot['signature']) ? (string)$bot['signature'] : '');
     $replyText = worker_enforce_banned_phrase_cleanup($replyText);
 }
-if ($forceLowEffortCadenceTop && !worker_is_low_effort_reaction($replyText)) {
+if (($forceLowEffortCadenceTop || $forceThreadShortReplyTop) && !worker_is_low_effort_reaction($replyText)) {
     $replyText = worker_low_effort_reaction_for_bot(
         (string)($bot['username'] ?? ''),
         (string)$topicTitle . '|' . (string)$topicId . '|' . (string)$latestUsername
@@ -5883,8 +5943,8 @@ if (!empty($duplicateGate['skip'])) {
 
 $newDetailsGate = $learnerFollowupModeTop
     ? array('applied' => false, 'adds_new_details' => true, 'reason' => 'learner_followup_mode')
-    : ($forceLowEffortCadenceTop
-        ? array('applied' => false, 'adds_new_details' => true, 'reason' => 'low_effort_cadence_override')
+    : (($forceLowEffortCadenceTop || $forceThreadShortReplyTop)
+        ? array('applied' => false, 'adds_new_details' => true, 'reason' => ($forceThreadShortReplyTop ? 'thread_short_reply_override' : 'low_effort_cadence_override'))
         : worker_reply_adds_new_details_pass($replyText, $posts, max(1, count($posts))));
 if (empty($newDetailsGate['adds_new_details']) && $forceOrphanReviveMode) {
     $newDetailsGate = array('applied' => false, 'adds_new_details' => true, 'reason' => 'forced_orphan_revive_mode');
