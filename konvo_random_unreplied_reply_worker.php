@@ -1696,6 +1696,48 @@ function worker_normalize_technical_sentences($text)
     return trim((string)$text);
 }
 
+function worker_force_visual_breaks_for_technical_reply($text)
+{
+    $text = str_replace(array("\r\n", "\r"), "\n", (string)$text);
+    $text = trim((string)$text);
+    if ($text === '') return '';
+    if (strpos((string)$text, "\n\n") !== false) return $text;
+
+    $segments = preg_split('/(```[\s\S]*?```)/', (string)$text, -1, PREG_SPLIT_DELIM_CAPTURE);
+    if (!is_array($segments) || $segments === array()) $segments = array((string)$text);
+
+    foreach ($segments as $i => $segment) {
+        if ($i % 2 === 1) continue;
+        $segment = trim((string)$segment);
+        if ($segment === '') continue;
+        if (preg_match('/^\s*(https?:\/\/\S+|[-*]\s+|\d+\.\s+)/m', (string)$segment)) {
+            $segments[$i] = $segment;
+            continue;
+        }
+
+        $sentences = preg_split('/(?<=[.!?])\s+(?=[A-Z0-9@])/u', (string)$segment) ?: array();
+        $sentences = array_values(array_filter(array_map(static function ($s) {
+            return trim((string)$s);
+        }, $sentences), static function ($s) {
+            return $s !== '';
+        }));
+
+        if (count($sentences) >= 2) {
+            $first = (string)$sentences[0];
+            $rest = trim((string)implode(' ', array_slice($sentences, 1)));
+            if (strlen($first) >= 40 || strlen($segment) >= 180) {
+                $segment = $first . "\n\n" . $rest;
+            }
+        }
+
+        $segments[$i] = trim((string)$segment);
+    }
+
+    $out = trim((string)implode('', $segments));
+    $out = preg_replace('/\n{3,}/', "\n\n", (string)$out);
+    return trim((string)$out);
+}
+
 function worker_restructure_technical_bullets($text)
 {
     $text = str_replace(array("\r\n", "\r"), "\n", (string)$text);
@@ -5114,6 +5156,9 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     $txt = worker_apply_micro_grammar_fixes($txt);
     $txt = worker_grammar_cleanup_with_llm($soul, $signature, $topicTitle, $opRaw, $txt, $isTechnicalQuestion);
     $txt = worker_apply_micro_grammar_fixes($txt);
+    if ($isTechnicalQuestion) {
+        $txt = worker_force_visual_breaks_for_technical_reply($txt);
+    }
     if (!$isTechnicalQuestion) {
         $txt = force_standalone_urls($txt);
     } else {
@@ -5121,6 +5166,9 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     }
     $txt = worker_markdown_code_integrity_pass($txt);
     $txt = worker_normalize_code_fence_spacing($txt);
+    if ($isTechnicalQuestion) {
+        $txt = worker_force_visual_breaks_for_technical_reply($txt);
+    }
     $txt = worker_strip_foreign_bot_name_noise($txt, $botUsername);
     $txt = normalize_signature($txt, $signature);
     $txt = worker_enforce_banned_phrase_cleanup($txt);
