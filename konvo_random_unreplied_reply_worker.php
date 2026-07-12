@@ -4259,6 +4259,7 @@ function worker_technical_question_framework_prompt($botUsername)
         . "- One conversational reply, no headings or labeled sections\n"
         . "- Answer in the first clause\n"
         . "- Use short sentences and blank lines between distinct ideas\n"
+        . "- If you make a second point, put it in a new paragraph instead of continuing one dense block\n"
         . "- Include at most one small code block only if it materially improves clarity\n"
         . "- If code is multi-line, use plain fenced code blocks with triple backticks and no language label\n"
         . "- End on a complete thought (no dangling fragments)\n\n"

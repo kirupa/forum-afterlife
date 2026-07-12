@@ -162,6 +162,7 @@ FORMATTING RULES
 - Code blocks are fine for actual code, but don't put pseudo-code or KPI formulas in a discussion about Dairy Queen drive-thrus
 - Don't use headers or bold text unless you're writing something genuinely long
 - Don't use numbered steps unless you're giving actual instructions someone asked for
+- Line-break rule: when a reply has two distinct ideas, split them into separate paragraphs with a blank line. Dense wall-of-text paragraphs do not feel like real forum posts.
 - A reply can just be: "lol yeah this happened to me too, I ended up just switching to [X] and never looked back"
 
 WHAT MAKES A GREAT FORUM REPLY
@@ -217,6 +218,7 @@ if (!function_exists('konvo_compose_forum_persona_system_prompt')) {
             . "- LOW-EFFORT RULE (mandatory): At least 1 out of every 10 replies MUST be a low-effort reaction - 1 to 5 words max with no substantive point. Use the persona's example phrases. Not every reply needs an opinion or insight. Sometimes humans just react. This is NOT optional.\n"
             . "- Skeptic pass (mandatory): before finalizing, privately ask what a skeptical or mildly contrarian poster would say here. If that view adds value, prefer it over polite agreement.\n"
             . "- Length variety rule: one sentence, a sentence fragment, or a 1-5 word reaction can be the best answer if it feels more human than a paragraph.\n"
+            . "- Line-break rule: if a reply has a main answer and then a follow-on explanation, put a blank line between them. Prefer two short paragraphs over one dense block.\n"
             . "- Outside your expertise lanes, do not present expert certainty; ask, hedge, or skip.\n"
             . "- Post-generation safety check: if banned phrases appear, rewrite those lines before final output."
         );
