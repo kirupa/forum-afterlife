@@ -65,6 +65,26 @@ function casual_out(int $status, array $data): void
     exit;
 }
 
+// A misconfigured cron entry (minute field "*" instead of "0") can fire this worker every
+// minute for a whole hour. Without a lock, overlapping runs each pick the same top-ranked
+// seed article independently and all post before any of them marks that URL as seen. This
+// keeps only one real (non-dry-run) invocation executing at a time.
+function casual_acquire_run_lock(): bool
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    $path = $dir . '/casual_topic_worker.lock';
+    $handle = @fopen($path, 'c');
+    if ($handle === false) {
+        return true;
+    }
+    if (!flock($handle, LOCK_EX | LOCK_NB)) {
+        fclose($handle);
+        return false;
+    }
+    return true;
+}
+
 set_exception_handler(static function (\Throwable $e): void {
     $where = basename((string)$e->getFile()) . ':' . (int)$e->getLine();
     $msg = trim((string)$e->getMessage());
@@ -173,6 +193,47 @@ function casual_daily_count_increment(string $day): int
     $state[$day] = max(0, (int)($state[$day] ?? 0)) + 1;
     casual_daily_counts_save($state);
     return (int)$state[$day];
+}
+
+function casual_seen_urls_path(): string
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir . '/casual_topic_seen_urls.json';
+}
+
+function casual_load_seen_urls(): array
+{
+    $path = casual_seen_urls_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') return array();
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : array();
+}
+
+function casual_save_seen_urls(array $seen): void
+{
+    $now = time();
+    foreach ($seen as $url => $ts) {
+        if (($now - (int)$ts) > 30 * 24 * 3600) {
+            unset($seen[$url]);
+        }
+    }
+    arsort($seen);
+    $seen = array_slice($seen, 0, 600, true);
+    @file_put_contents(casual_seen_urls_path(), json_encode($seen, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function casual_remember_seed_url(string $url): void
+{
+    $url = trim($url);
+    if ($url === '' || !preg_match('/^https?:\/\/\S+$/i', $url)) return;
+    $seen = casual_load_seen_urls();
+    $seen[$url] = time();
+    casual_save_seen_urls($seen);
 }
 
 function casual_load_recent_topics(): array
@@ -704,6 +765,10 @@ function casual_parse_feed_items(string $xml, int $maxItems): array
 
 function casual_fetch_news_seed_candidates(int $max = 30): array
 {
+    // Feed items only get deduped against recently *generated forum titles*, never against
+    // the source URL itself - so the same article (its RSS position doesn't change for days)
+    // kept getting reworded into fresh-sounding topics that all cited the same source link.
+    $seenUrls = casual_load_seen_urls();
     $all = array();
     $sources = casual_feed_sources();
     shuffle($sources);
@@ -727,6 +792,7 @@ function casual_fetch_news_seed_candidates(int $max = 30): array
                 'source_feed' => $feed,
             );
             if ($candidate['title'] === '' || $candidate['url'] === '') continue;
+            if (isset($seenUrls[$candidate['url']])) continue;
             if (casual_item_looks_shopping_deal($candidate)) continue;
             if (casual_item_looks_controversial_topic($candidate)) continue;
             if (!casual_text_is_english_like($candidate['title'] . "\n" . $candidate['summary'])) continue;
@@ -1720,6 +1786,13 @@ if (KONVO_OPENAI_API_KEY === '') {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+if (!$dryRun && !casual_acquire_run_lock()) {
+    casual_out(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'Skipped: another instance of this worker is already running (overlapping cron trigger).',
+    ));
+}
 $force = isset($_GET['force']) && (string)$_GET['force'] === '1';
 $allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
 $allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
@@ -1903,6 +1976,7 @@ $topicId = (int)($post['body']['topic_id'] ?? 0);
 $postNumber = (int)($post['body']['post_number'] ?? 1);
 $topicUrl = rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '/' . $postNumber;
 casual_remember_topic($title, (string)($plan['angle'] ?? ''), (string)($plan['lane'] ?? (string)($lane['key'] ?? '')), $raw);
+casual_remember_seed_url((string)($plan['seed_url'] ?? ''));
 casual_consensus_register_topic($topicId, $bot, $title, $categoryId, $plan);
 $todayCountAfterPost = casual_daily_count_increment($today);
 
