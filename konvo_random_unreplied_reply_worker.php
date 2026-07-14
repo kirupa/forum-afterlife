@@ -879,17 +879,6 @@ function worker_enforce_reply_quality_gate($bot, $topicTitle, $targetRaw, $draft
     );
 }
 
-function worker_is_known_bot_username($username)
-{
-    static $botSet = null;
-    if ($botSet === null) {
-        $bots = array('baymax', 'kirupabot', 'vaultboy', 'mechaprime', 'yoshiii', 'bobamilk', 'wafflefries', 'quelly', 'sora', 'sarah_connor', 'ellen1979', 'arthurdent', 'hariseldon');
-        $botSet = array_fill_keys($bots, true);
-    }
-    $u = strtolower(trim((string)$username));
-    return $u !== '' && isset($botSet[$u]);
-}
-
 function worker_topic_is_solved($topic)
 {
     if (!is_array($topic)) return false;
