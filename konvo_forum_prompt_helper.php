@@ -199,6 +199,38 @@ PROMPT;
     }
 }
 
+if (!function_exists('konvo_pick_reply_length_bucket')) {
+    // The prompt above only *asks* the model to self-distribute reply length (20/40/30/10),
+    // which drifts toward one safe medium-paragraph shape over many calls. This makes the
+    // length target explicit and numeric per call, matching real forum/Twitter/Reddit variance.
+    function konvo_pick_reply_length_bucket(int $seed): array
+    {
+        $roll = (($seed % 100) + 100) % 100;
+        if ($roll < 20) {
+            return array(
+                'bucket' => 'micro',
+                'instruction' => 'Length target for THIS reply only: micro. Write about 1 to 8 words - a fragment, a reaction, or a one-line take. Do not turn it into a full explanatory sentence.',
+            );
+        }
+        if ($roll < 60) {
+            return array(
+                'bucket' => 'short',
+                'instruction' => 'Length target for THIS reply only: short. Aim for roughly 10 to 30 words, 2 to 4 sentences at most - a quick take, not a paragraph.',
+            );
+        }
+        if ($roll < 90) {
+            return array(
+                'bucket' => 'medium',
+                'instruction' => 'Length target for THIS reply only: medium. Aim for roughly 30 to 70 words - a short paragraph making one real point.',
+            );
+        }
+        return array(
+            'bucket' => 'long',
+            'instruction' => 'Length target for THIS reply only: long. Up to roughly 70 to 150 words is fine here, but only because you actually have something substantive to say - never pad just to fill the length.',
+        );
+    }
+}
+
 if (!function_exists('konvo_compose_forum_persona_system_prompt')) {
     function konvo_compose_forum_persona_system_prompt(string $soulPrompt): string
     {

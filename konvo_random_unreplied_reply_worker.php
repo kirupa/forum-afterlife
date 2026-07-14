@@ -109,6 +109,28 @@ function save_seen_topics($state)
     @file_put_contents(state_path(), json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
+// Overlapping cron triggers (e.g. two schedule entries firing the same minute) can otherwise
+// race to reply to the same unreplied post from different bots at nearly the same instant.
+// This keeps only one real (non-dry-run) invocation of this worker executing at a time.
+function worker_acquire_run_lock()
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    $path = $dir . '/random_unreplied_reply_worker.lock';
+    $handle = @fopen($path, 'c');
+    if ($handle === false) {
+        // If we can't even open a lock file, fail open rather than blocking all replies forever.
+        return true;
+    }
+    if (!flock($handle, LOCK_EX | LOCK_NB)) {
+        fclose($handle);
+        return false;
+    }
+    // Intentionally leaked for the life of the request: PHP releases the flock
+    // automatically when the script exits or the handle is garbage collected.
+    return true;
+}
+
 function worker_consensus_state_path()
 {
     $dir = __DIR__ . '/.konvo_state';
@@ -4541,6 +4563,11 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     }
     $isPreferenceThread = worker_is_preference_thread($topicTitle . "\n" . $opRaw . "\n" . (string)$topicContextText);
     $seed = abs((int)crc32(strtolower($signature . '|' . $topicTitle . '|' . substr($opRaw, 0, 180))));
+    $lengthBucketSeed = abs((int)crc32(strtolower($signature . '|length_bucket|' . $topicTitle . '|' . substr($opRaw, 0, 180))));
+    $lengthBucket = function_exists('konvo_pick_reply_length_bucket')
+        ? konvo_pick_reply_length_bucket($lengthBucketSeed)
+        : array('bucket' => 'short', 'instruction' => '');
+    $lengthBucketRule = (string)($lengthBucket['instruction'] ?? '');
     $contrarianMode = (bool)$forceContrarian || (($seed % 100) < ($targetAuthorIsBot ? 8 : 18));
     if ($learnerFollowupMode) {
         $contrarianMode = false;
@@ -4787,7 +4814,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         . $botToneRule . ' ' . $botRoleRule . ' If the topic asks a question, answer in the first clause, then add a brief qualifier. '
         . 'Never end on a dangling fragment; if you shorten, keep the thought complete. '
         . 'If listing 3 or more items, use markdown bullet points with one item per line. '
-        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $crossThreadOpeningRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $deeperResearchRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' Do not sign your post; the forum already shows your username.';
+        . $pollInstruction . ' ' . $codeSnippetRule . ' ' . $freshnessRule . ' ' . $personalityRule . ' ' . $conversationalHookRule . ' ' . $colloquialLanguageRule . ' ' . $informationDensityRule . ' ' . $redditStructureRule . ' ' . $grammarRule . ' ' . $linkInstruction . ' ' . $solutionVideoRule . ' ' . $contrarianInstruction . ' ' . $memeReactionRule . ' ' . $conversationFirstRule . ' ' . $botToBotThreadRule . ' ' . $antiAcademicRule . ' ' . $crossBotRule . ' ' . $selfNoveltyRule . ' ' . $threadDiversityRule . ' ' . $distinctAngleRule . ' ' . $openingDiversityRule . ' ' . $crossThreadOpeningRule . ' ' . $antiAgreementRule . ' ' . $expertiseScopeRule . ' ' . $questionCadenceRule . ' ' . $uncertaintyRule . ' ' . $casualHumorRule . ' ' . $lowEffortRule . ' ' . $continuityRule . ' ' . $quirkyRule . ' ' . $learnerFollowupRule . ' ' . $deeperResearchRule . ' ' . $previousFiveVarietyRule . ' ' . $noReplyRule . ' ' . $lengthBucketRule . ' Do not sign your post; the forum already shows your username.';
     $user = "Topic title: {$topicTitle}\n"
         . "OP username: @{$opUsername}\n"
         . "OP content:\n" . substr($opRaw, 0, 1200) . "\n\n"
@@ -5353,6 +5380,13 @@ if ($key === '' || !safe_hash_equals(KONVO_SECRET, $key)) {
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+if (!$dryRun && !worker_acquire_run_lock()) {
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'Skipped: another instance of this worker is already running (overlapping cron trigger).',
+    ));
+}
 if (KONVO_DISCOURSE_API_KEY === '') {
     out_json(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
@@ -6042,6 +6076,30 @@ if ($dryRun) {
         'reply_preview' => $replyText,
         'fallback_used' => $fallbackUsed,
     ));
+}
+
+// Defense-in-depth against races: even with the run lock above, re-check right before
+// posting in case another process (different host, manual retry, key shared elsewhere)
+// already replied to this same topic while this run was generating its reply.
+$recheckDetail = fetch_json(rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '.json', array(
+    'Api-Key: ' . KONVO_DISCOURSE_API_KEY,
+    'Api-Username: BayMax',
+));
+if (is_array($recheckDetail) && isset($recheckDetail['post_stream']['posts']) && is_array($recheckDetail['post_stream']['posts'])) {
+    foreach ($recheckDetail['post_stream']['posts'] as $recheckPost) {
+        if (!is_array($recheckPost)) continue;
+        $recheckPostNumber = (int)($recheckPost['post_number'] ?? 0);
+        $recheckUsername = (string)($recheckPost['username'] ?? '');
+        if ($recheckPostNumber > $latestPostNumber && is_bot_user($recheckUsername)) {
+            out_json(200, array(
+                'ok' => true,
+                'posted' => false,
+                'reason' => 'Skipped: another bot already replied to this topic since this run started.',
+                'topic_id' => $topicId,
+                'raced_with_username' => $recheckUsername,
+            ));
+        }
+    }
 }
 
 $postRes = post_json(
