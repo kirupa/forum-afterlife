@@ -305,7 +305,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
         . "Rules:\n"
         . "- Title: 64 characters or fewer, plain, no clickbait, no site-name prefix, no trailing punctuation.\n"
         . "- Body: 2 to 5 sentences in your own voice reacting to the actual content, not just restating a meta description verbatim.\n"
-        . "- Put the raw URL on its own line somewhere natural in the body so the forum can preview it.\n"
+        . "- Do NOT include the URL anywhere in the body text and do NOT write your own \"source\" or link line - it is added automatically after your text.\n"
         . "- If human guidance is given below, treat it as what to emphasize or the angle to take, and follow it closely.\n"
         . "- No sign-off line, no hashtags, no emoji spam.\n"
         . "Return ONLY JSON: {\"title\":\"...\",\"raw\":\"...\"}.";
@@ -362,9 +362,12 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
     if ($draftRaw === '') {
         return array('ok' => false, 'error' => 'Model returned an empty body.');
     }
-    if (strpos($draftRaw, $url) === false) {
-        $draftRaw = rtrim($draftRaw) . "\n\n" . $url;
-    }
+    // Keep the source out of the body's prose entirely; it always lands as its
+    // own footer line at the very bottom, regardless of what the model wrote.
+    $draftRaw = str_replace($url, '', $draftRaw);
+    $draftRaw = preg_replace('/[ \t]{2,}/', ' ', $draftRaw) ?? $draftRaw;
+    $draftRaw = trim((string)$draftRaw);
+    $draftRaw = rtrim($draftRaw) . "\n\nSource: " . $url;
     return array('ok' => true, 'title' => $title, 'raw' => $draftRaw);
 }
 
