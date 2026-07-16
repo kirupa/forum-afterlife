@@ -261,15 +261,15 @@ function jsqa_build_answer_raw(array $item, string $signature): string
     }
 
     $lines = array();
-    $lines[] = 'JS Quiz answer: Option ' . $answerIndex . ' (' . $letter . ').';
+    $lines[] = '**JS Quiz answer:** Option ' . $answerIndex . ' (' . $letter . ').';
     $lines[] = '';
-    $lines[] = 'Correct choice: ' . $answerOption;
+    $lines[] = '**Correct choice:** ' . $answerOption;
     $lines[] = '';
-    $lines[] = 'Why:';
+    $lines[] = '**Why:**';
     $lines[] = $explanation;
     if ($articleUrl !== '') {
         $lines[] = '';
-        $lines[] = 'Go deeper:';
+        $lines[] = '**Go deeper:**';
         $lines[] = '';
         $lines[] = $articleUrl;
     }

@@ -60,6 +60,26 @@ function kirupa_normalize_url_key(string $url): string
     return $u;
 }
 
+// llms.txt lists the AI-consumable .md/.txt source for each article under an /ai/
+// subfolder, but humans should land on the actual published page. Every article in
+// that /ai/ subfolder has a same-slug .htm sibling one directory up - rewrite to
+// that when it exists locally, otherwise leave the URL alone.
+function kirupa_canonicalize_article_url(string $url): string
+{
+    if (!preg_match('#^(https://www\.kirupa\.com)/(.*)/ai/([^/]+)\.(?:md|txt)$#i', trim($url), $m)) {
+        return $url;
+    }
+    $origin = $m[1];
+    $category = trim($m[2], '/');
+    $slug = $m[3];
+    $relativePath = ($category !== '' ? $category . '/' : '') . $slug . '.htm';
+    $localPath = __DIR__ . '/' . $relativePath;
+    if (!is_file($localPath)) {
+        return $url;
+    }
+    return $origin . '/' . $relativePath;
+}
+
 function kirupa_fetch_llms_links(): array
 {
     static $cache = null;
@@ -100,7 +120,7 @@ function kirupa_fetch_llms_links(): array
             if ($title !== '' && $url !== '') {
                 $k = kirupa_normalize_url_key($url);
                 if ($k !== '' && !isset($seen[$k])) {
-                    $items[] = ['title' => $title, 'url' => $url];
+                    $items[] = ['title' => $title, 'url' => kirupa_canonicalize_article_url($url)];
                     $seen[$k] = true;
                 }
             }
@@ -116,7 +136,7 @@ function kirupa_fetch_llms_links(): array
         $url = $line;
         $k = kirupa_normalize_url_key($url);
         if ($k === '' || isset($seen[$k])) continue;
-        $items[] = ['title' => kirupa_guess_title_from_url($url), 'url' => $url];
+        $items[] = ['title' => kirupa_guess_title_from_url($url), 'url' => kirupa_canonicalize_article_url($url)];
         $seen[$k] = true;
     }
 
