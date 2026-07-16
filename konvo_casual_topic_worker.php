@@ -1760,6 +1760,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'Keep titles concise, complete, and natural. '
         . 'Keep the body short, conversational, and human. '
         . 'No code blocks, no hashtags, no sign-off line. '
+        . 'Never use an em dash (—), for any reason. If a clause wants one, split it into two separate sentences instead. '
         . 'Immediately after the sentence that introduces the main theme/subject of the post, insert the exact marker [[IMAGE]] alone on its own line, with a blank line before and after it. Always include this marker exactly once, even though you do not know yet whether an image will actually be placed there.';
 
     $user = "Seed topic: {$seedTopic}\n"
@@ -1804,6 +1805,9 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
 
     $title = casual_normalize_title((string)($obj['title'] ?? ''));
     $raw = casual_normalize_body((string)($obj['raw'] ?? ''), $signature);
+    if (function_exists('konvo_break_up_em_dashes')) {
+        $raw = konvo_break_up_em_dashes($raw);
+    }
     $raw = casual_append_source_reference($raw, $seedUrl);
     $planMood = trim((string)($obj['plan_mood'] ?? ''));
     $planAngle = trim((string)($obj['plan_angle'] ?? ''));

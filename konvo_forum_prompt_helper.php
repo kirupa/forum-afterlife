@@ -2,6 +2,44 @@
 
 declare(strict_types=1);
 
+if (!function_exists('konvo_break_up_em_dashes')) {
+    // The prompt only *asks* the model to avoid em dashes, and it doesn't always comply.
+    // This deterministically rewrites any that slip through into two separate sentences,
+    // paragraph by paragraph so blank-line breaks are preserved.
+    function konvo_break_up_em_dashes(string $text): string
+    {
+        if (strpos($text, "\xE2\x80\x94") === false) return $text;
+        $paragraphs = preg_split('/\n{2,}/', $text) ?: array($text);
+        $rebuilt = array();
+        foreach ($paragraphs as $para) {
+            if (strpos($para, "\xE2\x80\x94") === false) {
+                $rebuilt[] = $para;
+                continue;
+            }
+            $segments = preg_split('/\s*\x{2014}\s*/u', $para) ?: array($para);
+            $sentences = array();
+            foreach ($segments as $seg) {
+                $seg = trim($seg);
+                if ($seg === '') continue;
+                $seg = preg_replace_callback('/^\p{Ll}/u', static function ($m) {
+                    return mb_strtoupper($m[0], 'UTF-8');
+                }, $seg) ?? $seg;
+                $sentences[] = $seg;
+            }
+            $count = count($sentences);
+            $joined = '';
+            foreach ($sentences as $i => $sentence) {
+                if ($i < $count - 1 && !preg_match('/[.!?…"\')]$/u', $sentence)) {
+                    $sentence .= '.';
+                }
+                $joined .= ($joined === '' ? '' : ' ') . $sentence;
+            }
+            $rebuilt[] = $joined;
+        }
+        return implode("\n\n", $rebuilt);
+    }
+}
+
 if (!function_exists('konvo_natural_forum_responder_prompt')) {
     function konvo_natural_forum_responder_prompt(): string
     {
@@ -57,6 +95,7 @@ These are LLM fingerprints. Never use them:
 - "If [condition], [recommendation], otherwise [fallback]" (the if/otherwise advisory structure)
 - "Look — " or "Here's the thing — " as a dash-opener pivot into a restated thesis
 - "This is the part [everyone/nobody/people] [hand-wave/miss/gloss over]..." (same move as "The real X will be", different words)
+- Em dashes (—) anywhere, for any reason. Never use one, even for a pause, an aside, or joining two clauses. If you're tempted to use one, split it into two separate sentences instead.
 
 2b. STRUCTURAL fingerprints to avoid.
 These are shapes, not phrases, so they slip past phrase-matching:
@@ -317,6 +356,7 @@ Never say
 - Aphorism phrasing anywhere.
 - Closing a reply with an enumerated question that lists 3+ parallel options ("is it A, B, C, or D?"). Commit to one guess, or say you don't know.
 - The hook -> reframe/thesis -> elaboration -> tidy closing question shape overall, even if no single line above is used.
+- Em dashes (—), ever. If a clause wants one, split it into two sentences instead.
 
 Capitalization
 - Default is standard, correct capitalization.

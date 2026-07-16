@@ -3902,6 +3902,9 @@ function worker_enforce_banned_phrase_cleanup($text)
         $s = preg_replace('/\bblast radius\b/i', 'impact scope', (string)$s);
         $s = preg_replace('/\bthat(?:\'|’)s the gotcha\b/i', 'that is the edge case', (string)$s);
         $s = preg_replace('/\bgotcha\b/i', 'edge case', (string)$s);
+        if (function_exists('konvo_break_up_em_dashes')) {
+            $s = konvo_break_up_em_dashes((string)$s);
+        }
         $segments[$i] = is_string($s) ? $s : (string)$segment;
     }
     $out = trim(implode('', $segments));

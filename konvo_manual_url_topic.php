@@ -277,6 +277,43 @@ function konvo_manual_try_attach_image($url, $pageImageUrl, $raw)
     return konvo_manual_resolve_image_marker($raw, $imageMarkdown);
 }
 
+// The prompt only *asks* the model to avoid em dashes, and it doesn't always comply.
+// This deterministically rewrites any that slip through into two separate sentences,
+// paragraph by paragraph so blank-line breaks are preserved.
+function konvo_manual_break_up_em_dashes($text)
+{
+    $text = (string)$text;
+    if (strpos($text, "\xE2\x80\x94") === false) return $text;
+    $paragraphs = preg_split('/\n{2,}/', $text) ?: array($text);
+    $rebuilt = array();
+    foreach ($paragraphs as $para) {
+        if (strpos($para, "\xE2\x80\x94") === false) {
+            $rebuilt[] = $para;
+            continue;
+        }
+        $segments = preg_split('/\s*\x{2014}\s*/u', $para) ?: array($para);
+        $sentences = array();
+        foreach ($segments as $seg) {
+            $seg = trim($seg);
+            if ($seg === '') continue;
+            $seg = preg_replace_callback('/^\p{Ll}/u', static function ($m) {
+                return mb_strtoupper($m[0], 'UTF-8');
+            }, $seg) ?? $seg;
+            $sentences[] = $seg;
+        }
+        $count = count($sentences);
+        $joined = '';
+        foreach ($sentences as $i => $sentence) {
+            if ($i < $count - 1 && !preg_match('/[.!?…"\')]$/u', $sentence)) {
+                $sentence .= '.';
+            }
+            $joined .= ($joined === '' ? '' : ' ') . $sentence;
+        }
+        $rebuilt[] = $joined;
+    }
+    return implode("\n\n", $rebuilt);
+}
+
 function konvo_manual_normalize_title($title)
 {
     $title = trim(strip_tags((string)$title));
@@ -370,6 +407,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
         . "- Do NOT include the URL anywhere in the body text and do NOT write your own \"source\" or link line - it is added automatically after your text.\n"
         . "- If human guidance is given below, treat it as what to emphasize or the angle to take, and follow it closely.\n"
         . "- No sign-off line, no hashtags, no emoji spam.\n"
+        . "- Never use an em dash (—), for any reason. If a clause wants one, split it into two separate sentences instead.\n"
         . "- Immediately after the sentence that introduces the main theme/subject of the post, insert the exact marker [[IMAGE]] alone on its own line, with a blank line before and after it. Always include this marker exactly once, even though you don't know yet whether an image will actually be placed there.\n"
         . "Return ONLY JSON: {\"title\":\"...\",\"raw\":\"...\"}.";
 
@@ -425,6 +463,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
     if ($draftRaw === '') {
         return array('ok' => false, 'error' => 'Model returned an empty body.');
     }
+    $draftRaw = konvo_manual_break_up_em_dashes($draftRaw);
     // Keep the source out of the body's prose entirely; it always lands as its
     // own footer line at the very bottom, regardless of what the model wrote.
     $draftRaw = str_replace($url, '', $draftRaw);

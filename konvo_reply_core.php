@@ -609,6 +609,9 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
         $s = preg_replace('/\bblast radius\b/i', 'impact scope', $s) ?? $s;
         $s = preg_replace('/\bthat(?:\'|’)s the gotcha\b/i', 'that is the edge case', $s) ?? $s;
         $s = preg_replace('/\bgotcha\b/i', 'edge case', $s) ?? $s;
+        if (function_exists('konvo_break_up_em_dashes')) {
+            $s = konvo_break_up_em_dashes($s);
+        }
         $segments[$i] = $s;
     }
     $out = trim(implode('', $segments));
@@ -697,6 +700,7 @@ NEVER SAY
 - "This is the part [everyone/nobody/people] [hand-waves/misses/glosses over]..." - same move as "the real question is", different words.
 - Buzzword verbs like leverage, navigate, unpack, delve, underscore, resonate, streamline.
 - Aphorism phrasing.
+- Em dashes (—), ever, for any reason. If a clause wants one, split it into two sentences instead.
 
 STRUCTURAL FINGERPRINTS TO AVOID
 
@@ -729,6 +733,44 @@ REMEMBER
 - This guide defines how that bot should sound in the moment.
 - Do not sound like a generated essay.
 PROMPT;
+}
+
+if (!function_exists('konvo_break_up_em_dashes')) {
+    // The prompt only *asks* the model to avoid em dashes, and it doesn't always comply.
+    // This deterministically rewrites any that slip through into two separate sentences,
+    // paragraph by paragraph so blank-line breaks are preserved.
+    function konvo_break_up_em_dashes(string $text): string
+    {
+        if (strpos($text, "\xE2\x80\x94") === false) return $text;
+        $paragraphs = preg_split('/\n{2,}/', $text) ?: array($text);
+        $rebuilt = array();
+        foreach ($paragraphs as $para) {
+            if (strpos($para, "\xE2\x80\x94") === false) {
+                $rebuilt[] = $para;
+                continue;
+            }
+            $segments = preg_split('/\s*\x{2014}\s*/u', $para) ?: array($para);
+            $sentences = array();
+            foreach ($segments as $seg) {
+                $seg = trim($seg);
+                if ($seg === '') continue;
+                $seg = preg_replace_callback('/^\p{Ll}/u', static function ($m) {
+                    return mb_strtoupper($m[0], 'UTF-8');
+                }, $seg) ?? $seg;
+                $sentences[] = $seg;
+            }
+            $count = count($sentences);
+            $joined = '';
+            foreach ($sentences as $i => $sentence) {
+                if ($i < $count - 1 && !preg_match('/[.!?…"\')]$/u', $sentence)) {
+                    $sentence .= '.';
+                }
+                $joined .= ($joined === '' ? '' : ' ') . $sentence;
+            }
+            $rebuilt[] = $joined;
+        }
+        return implode("\n\n", $rebuilt);
+    }
 }
 
 if (!function_exists('konvo_pick_reply_length_bucket')) {
