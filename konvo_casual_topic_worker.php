@@ -863,95 +863,6 @@ function casual_fetch_page_html(string $url): array
     return array('ok' => true, 'body' => (string)substr((string)$body, 0, 400000));
 }
 
-function casual_fetch_image_bytes(string $url): array
-{
-    if (!function_exists('curl_init')) return array('ok' => false);
-    $ch = curl_init($url);
-    curl_setopt_array($ch, array(
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 5,
-        CURLOPT_TIMEOUT => 15,
-        CURLOPT_USERAGENT => 'konvo-casual-topic-worker/2.0',
-    ));
-    $body = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $contentType = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($body === false || $err !== '' || $status < 200 || $status >= 300) {
-        return array('ok' => false);
-    }
-    if (strpos($contentType, 'image/') !== 0) {
-        return array('ok' => false);
-    }
-    if (strlen($body) > 8 * 1024 * 1024) {
-        return array('ok' => false);
-    }
-    return array('ok' => true, 'bytes' => (string)$body, 'content_type' => $contentType);
-}
-
-function casual_upload_image_to_discourse(string $botUsername, string $bytes, string $contentType, string $sourceUrl): array
-{
-    if (!function_exists('curl_init') || !class_exists('CURLStringFile')) {
-        return array('ok' => false);
-    }
-    $ext = 'jpg';
-    if (preg_match('#/(jpeg|jpg|png|gif|webp)$#', $contentType, $m)) {
-        $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
-    }
-    $filename = 'image_' . substr(sha1($sourceUrl . microtime()), 0, 12) . '.' . $ext;
-    $cfile = new CURLStringFile($bytes, $filename, $contentType);
-    $ch = curl_init(rtrim(KONVO_BASE_URL, '/') . '/uploads.json');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_HTTPHEADER => array(
-            'Api-Key: ' . KONVO_API_KEY,
-            'Api-Username: ' . $botUsername,
-        ),
-        CURLOPT_POSTFIELDS => array(
-            'type' => 'composer',
-            'file' => $cfile,
-        ),
-    ));
-    $res = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($res === false || $err !== '' || $status < 200 || $status >= 300) {
-        return array('ok' => false);
-    }
-    $decoded = json_decode((string)$res, true);
-    if (!is_array($decoded) || empty($decoded['short_url'])) {
-        return array('ok' => false);
-    }
-    return array(
-        'ok' => true,
-        'short_url' => (string)$decoded['short_url'],
-        'width' => (int)($decoded['width'] ?? 0),
-        'height' => (int)($decoded['height'] ?? 0),
-    );
-}
-
-function casual_image_markdown(array $upload): string
-{
-    $shortUrl = (string)($upload['short_url'] ?? '');
-    if ($shortUrl === '') return '';
-    $w = (int)($upload['width'] ?? 0);
-    $h = (int)($upload['height'] ?? 0);
-    $maxW = 690;
-    if ($w > 0 && $h > 0) {
-        if ($w > $maxW) {
-            $h = (int)round($h * ($maxW / $w));
-            $w = $maxW;
-        }
-        return "![image|{$w}x{$h}](" . $shortUrl . ")";
-    }
-    return "![image](" . $shortUrl . ")";
-}
-
 function casual_insert_image_into_body(string $raw, string $imageMarkdown): string
 {
     $imageMarkdown = trim($imageMarkdown);
@@ -963,22 +874,17 @@ function casual_insert_image_into_body(string $raw, string $imageMarkdown): stri
     return trim($raw) . "\n\n" . $imageMarkdown;
 }
 
-// Best-effort only: any failure along the way (page fetch, no og:image, download,
-// or Discourse upload) just leaves the post as plain text - never blocks posting.
-function casual_try_attach_seed_image(string $botUsername, string $seedUrl, string $raw): string
+// Best-effort only: any failure along the way (page fetch or no og:image) just
+// leaves the post as plain text - never blocks posting. References the image
+// directly from the article's own host rather than re-hosting it.
+function casual_try_attach_seed_image(string $seedUrl, string $raw): string
 {
     if ($seedUrl === '' || !preg_match('#^https?://#i', $seedUrl)) return $raw;
     $page = casual_fetch_page_html($seedUrl);
     if (empty($page['ok'])) return $raw;
     $imageUrl = casual_resolve_url($seedUrl, casual_extract_og_image((string)$page['body']));
     if ($imageUrl === '') return $raw;
-    $fetched = casual_fetch_image_bytes($imageUrl);
-    if (empty($fetched['ok'])) return $raw;
-    $uploaded = casual_upload_image_to_discourse($botUsername, $fetched['bytes'], $fetched['content_type'], $imageUrl);
-    if (empty($uploaded['ok'])) return $raw;
-    $markdown = casual_image_markdown($uploaded);
-    if ($markdown === '') return $raw;
-    return casual_insert_image_into_body($raw, $markdown);
+    return casual_insert_image_into_body($raw, '![image](' . $imageUrl . ')');
 }
 
 function casual_pick_interesting_news_seed(array $recentLocal, array $recentForumTitles): array
@@ -2093,7 +1999,7 @@ if (!is_array($generated) || empty($generated['ok'])) {
 $title = (string)$generated['title'];
 $raw = (string)$generated['raw'];
 $plan = isset($generated['plan']) && is_array($generated['plan']) ? $generated['plan'] : array();
-$raw = casual_try_attach_seed_image((string)($bot['username'] ?? ''), trim((string)($plan['seed_url'] ?? '')), $raw);
+$raw = casual_try_attach_seed_image(trim((string)($plan['seed_url'] ?? '')), $raw);
 $categoryDecision = array(
     'ok' => true,
     'category_key' => 'talk',

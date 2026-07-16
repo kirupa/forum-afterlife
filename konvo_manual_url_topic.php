@@ -235,97 +235,6 @@ function konvo_manual_resolve_url($base, $maybeRelative)
     return rtrim($origin . dirname((string)($baseParts['path'] ?? '/')), '/') . '/' . $maybeRelative;
 }
 
-function konvo_manual_fetch_image_bytes($url)
-{
-    if (!function_exists('curl_init') || !konvo_manual_url_is_safe($url)) {
-        return array('ok' => false);
-    }
-    $ch = curl_init($url);
-    curl_setopt_array($ch, array(
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 5,
-        CURLOPT_TIMEOUT => 15,
-        CURLOPT_USERAGENT => 'konvo-manual-url-topic/1.0',
-    ));
-    $body = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $contentType = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($body === false || $err !== '' || $status < 200 || $status >= 300) {
-        return array('ok' => false);
-    }
-    if (strpos($contentType, 'image/') !== 0) {
-        return array('ok' => false);
-    }
-    if (strlen($body) > 8 * 1024 * 1024) {
-        return array('ok' => false);
-    }
-    return array('ok' => true, 'bytes' => (string)$body, 'content_type' => $contentType);
-}
-
-function konvo_manual_upload_image_to_discourse($botUsername, $bytes, $contentType, $sourceUrl)
-{
-    if (!function_exists('curl_init') || !class_exists('CURLStringFile')) {
-        return array('ok' => false);
-    }
-    $ext = 'jpg';
-    if (preg_match('#/(jpeg|jpg|png|gif|webp)$#', $contentType, $m)) {
-        $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
-    }
-    $filename = 'image_' . substr(sha1($sourceUrl . microtime()), 0, 12) . '.' . $ext;
-    $cfile = new CURLStringFile($bytes, $filename, $contentType);
-    $ch = curl_init(rtrim(KONVO_BASE_URL, '/') . '/uploads.json');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_HTTPHEADER => array(
-            'Api-Key: ' . KONVO_API_KEY,
-            'Api-Username: ' . $botUsername,
-        ),
-        CURLOPT_POSTFIELDS => array(
-            'type' => 'composer',
-            'file' => $cfile,
-        ),
-    ));
-    $res = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($res === false || $err !== '' || $status < 200 || $status >= 300) {
-        return array('ok' => false);
-    }
-    $decoded = json_decode((string)$res, true);
-    if (!is_array($decoded) || empty($decoded['short_url'])) {
-        return array('ok' => false);
-    }
-    return array(
-        'ok' => true,
-        'short_url' => (string)$decoded['short_url'],
-        'width' => (int)($decoded['width'] ?? 0),
-        'height' => (int)($decoded['height'] ?? 0),
-    );
-}
-
-function konvo_manual_image_markdown($upload)
-{
-    $shortUrl = (string)($upload['short_url'] ?? '');
-    if ($shortUrl === '') return '';
-    $w = (int)($upload['width'] ?? 0);
-    $h = (int)($upload['height'] ?? 0);
-    $maxW = 690;
-    if ($w > 0 && $h > 0) {
-        if ($w > $maxW) {
-            $h = (int)round($h * ($maxW / $w));
-            $w = $maxW;
-        }
-        return "![image|{$w}x{$h}](" . $shortUrl . ")";
-    }
-    return "![image](" . $shortUrl . ")";
-}
-
 function konvo_manual_insert_image_into_body($raw, $imageMarkdown)
 {
     $imageMarkdown = trim((string)$imageMarkdown);
@@ -337,25 +246,13 @@ function konvo_manual_insert_image_into_body($raw, $imageMarkdown)
     return trim((string)$raw) . "\n\n" . $imageMarkdown;
 }
 
-function konvo_manual_try_attach_image($botUsername, $url, $pageImageUrl, $raw)
+function konvo_manual_try_attach_image($url, $pageImageUrl, $raw)
 {
     $imageUrl = konvo_manual_resolve_url($url, $pageImageUrl);
     if ($imageUrl === '' || !konvo_manual_url_is_safe($imageUrl)) {
         return $raw;
     }
-    $fetched = konvo_manual_fetch_image_bytes($imageUrl);
-    if (empty($fetched['ok'])) {
-        return $raw;
-    }
-    $uploaded = konvo_manual_upload_image_to_discourse($botUsername, $fetched['bytes'], $fetched['content_type'], $imageUrl);
-    if (empty($uploaded['ok'])) {
-        return $raw;
-    }
-    $markdown = konvo_manual_image_markdown($uploaded);
-    if ($markdown === '') {
-        return $raw;
-    }
-    return konvo_manual_insert_image_into_body($raw, $markdown);
+    return konvo_manual_insert_image_into_body($raw, '![image](' . $imageUrl . ')');
 }
 
 function konvo_manual_normalize_title($title)
@@ -646,7 +543,7 @@ if ($action === 'draft') {
     }
 
     if (!empty($meta['image'])) {
-        $draft['raw'] = konvo_manual_try_attach_image((string)$bot['username'], $url, (string)$meta['image'], $draft['raw']);
+        $draft['raw'] = konvo_manual_try_attach_image($url, (string)$meta['image'], $draft['raw']);
     }
 
     $categoryKey = konvo_manual_pick_category($draft['title'], $draft['raw']);
