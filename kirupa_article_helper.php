@@ -80,6 +80,61 @@ function kirupa_canonicalize_article_url(string $url): string
     return $origin . '/' . $relativePath;
 }
 
+// A model told to "include a kirupa.com URL if available" can invent one that
+// sounds plausible (right naming convention, real-looking folder) but doesn't
+// exist. Since this code runs on the same host that serves the site, checking
+// the local filesystem is faster and more reliable than a live HTTP round trip.
+function kirupa_url_exists_locally(string $url): bool
+{
+    $url = trim($url);
+    if (!preg_match('#^https?://(?:www\.)?kirupa\.com(/.*)?$#i', $url, $m)) {
+        return false;
+    }
+    $path = isset($m[1]) ? (string)$m[1] : '/';
+    $path = (string)parse_url($path, PHP_URL_PATH);
+    if ($path === '' || $path === '/') {
+        return true;
+    }
+    $path = ltrim($path, '/');
+    if (strpos($path, '..') !== false) {
+        return false;
+    }
+    $localPath = __DIR__ . '/' . $path;
+    if (is_file($localPath)) {
+        return true;
+    }
+    if (is_dir($localPath)) {
+        return is_file($localPath . '/index.html') || is_file($localPath . '/index.htm');
+    }
+    return false;
+}
+
+// Deterministic cleanup pass: any kirupa.com URL that doesn't resolve to a real
+// local file gets removed from the text, since a confidently-stated broken link
+// is worse than no link at all.
+function kirupa_strip_invalid_kirupa_urls(string $text): string
+{
+    if (stripos($text, 'kirupa.com') === false) {
+        return $text;
+    }
+    $urls = function_exists('kirupa_extract_urls_from_text')
+        ? kirupa_extract_urls_from_text($text)
+        : (preg_match_all('/https?:\/\/[^\s<>"\'`]+/i', $text, $mm) ? $mm[0] : array());
+    foreach ($urls as $u) {
+        $u = rtrim(trim((string)$u), '.,);!?');
+        if ($u === '' || !preg_match('#^https?://(?:www\.)?kirupa\.com(/|$)#i', $u)) {
+            continue;
+        }
+        if (kirupa_url_exists_locally($u)) {
+            continue;
+        }
+        $text = str_replace($u, '', $text);
+    }
+    $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
+    $text = preg_replace('/[ \t]{2,}/', ' ', $text) ?? $text;
+    return trim($text);
+}
+
 function kirupa_fetch_llms_links(): array
 {
     static $cache = null;

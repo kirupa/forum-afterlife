@@ -620,6 +620,9 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
     if (function_exists('konvo_break_before_closing_question')) {
         $out = konvo_break_before_closing_question($out);
     }
+    if (function_exists('kirupa_strip_invalid_kirupa_urls')) {
+        $out = kirupa_strip_invalid_kirupa_urls((string)$out);
+    }
     return trim((string)$out);
 }
 

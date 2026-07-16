@@ -3913,6 +3913,9 @@ function worker_enforce_banned_phrase_cleanup($text)
     if (function_exists('konvo_break_before_closing_question')) {
         $out = konvo_break_before_closing_question($out);
     }
+    if (function_exists('kirupa_strip_invalid_kirupa_urls')) {
+        $out = kirupa_strip_invalid_kirupa_urls((string)$out);
+    }
     return trim((string)$out);
 }
 
@@ -4712,7 +4715,11 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     } elseif ($isTechnicalQuestion && !$isKirupaBot) {
         $linkInstruction = 'Do not include external links, citations, or references in technical question mode.';
     } elseif ($isTechnicalQuestion && $isKirupaBot) {
-        $linkInstruction = 'Technical helper mode: include exactly one relevant kirupa.com article URL if available. Put the URL on its own line with blank lines around it.';
+        // Do not ask the model to supply its own kirupa.com URL here - it has no
+        // verified list to draw from in this mode and will confidently invent a
+        // plausible-looking one that does not exist. A real, verified article URL
+        // (if one is found) gets appended deterministically further down.
+        $linkInstruction = 'Technical helper mode: do not include any kirupa.com URL yourself. A verified relevant article link will be added separately if one exists.';
     } elseif ($isMemeGifThread) {
         $linkInstruction = 'Meme/GIF reaction mode: do not include external links unless it is the provided quirky reaction GIF URL.';
     } else {
