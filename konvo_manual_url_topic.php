@@ -314,6 +314,29 @@ function konvo_manual_break_up_em_dashes($text)
     return implode("\n\n", $rebuilt);
 }
 
+// A closing question glued onto the end of a wall of declarative sentences reads as one
+// dense block. If the text ends in a question preceded by other sentences in the same
+// paragraph, split that last question into its own paragraph.
+function konvo_manual_break_before_closing_question($text)
+{
+    $text = (string)$text;
+    $rtrimmed = rtrim($text);
+    if ($rtrimmed === '' || substr($rtrimmed, -1) !== '?') return $text;
+    $paragraphs = preg_split('/\n{2,}/', $rtrimmed);
+    if (!is_array($paragraphs) || $paragraphs === array()) return $text;
+    $lastIdx = count($paragraphs) - 1;
+    $lastPara = $paragraphs[$lastIdx];
+    if (!preg_match('/^(.*[.!?])\s+([^.!?]*\?)$/us', $lastPara, $m)) {
+        return $text;
+    }
+    $before = trim($m[1]);
+    $question = trim($m[2]);
+    if ($before === '' || $question === '') return $text;
+    $paragraphs[$lastIdx] = $before;
+    $paragraphs[] = $question;
+    return implode("\n\n", $paragraphs);
+}
+
 function konvo_manual_normalize_title($title)
 {
     $title = trim(strip_tags((string)$title));
@@ -408,6 +431,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
         . "- If human guidance is given below, treat it as what to emphasize or the angle to take, and follow it closely.\n"
         . "- No sign-off line, no hashtags, no emoji spam.\n"
         . "- Never use an em dash (—), for any reason. If a clause wants one, split it into two separate sentences instead.\n"
+        . "- If you end on a question after making your point, put a blank line before it so it lands as its own short paragraph. Never tack it onto the end of the same block of text.\n"
         . "- Immediately after the sentence that introduces the main theme/subject of the post, insert the exact marker [[IMAGE]] alone on its own line, with a blank line before and after it. Always include this marker exactly once, even though you don't know yet whether an image will actually be placed there.\n"
         . "Return ONLY JSON: {\"title\":\"...\",\"raw\":\"...\"}.";
 
@@ -464,6 +488,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
         return array('ok' => false, 'error' => 'Model returned an empty body.');
     }
     $draftRaw = konvo_manual_break_up_em_dashes($draftRaw);
+    $draftRaw = konvo_manual_break_before_closing_question($draftRaw);
     // Keep the source out of the body's prose entirely; it always lands as its
     // own footer line at the very bottom, regardless of what the model wrote.
     $draftRaw = str_replace($url, '', $draftRaw);

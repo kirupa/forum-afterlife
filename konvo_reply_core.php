@@ -616,6 +616,10 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
     }
     $out = trim(implode('', $segments));
     $out = preg_replace('/\n{3,}/', "\n\n", $out) ?? $out;
+    $out = trim((string)$out);
+    if (function_exists('konvo_break_before_closing_question')) {
+        $out = konvo_break_before_closing_question($out);
+    }
     return trim((string)$out);
 }
 
@@ -677,6 +681,7 @@ RHYTHM
 - Vary sentence length hard. A long sentence can be followed by a very short one. Fragments are fine.
 - Do not write in balanced aphorisms or evenly weighted sentences. Real writing is lumpy.
 - Do not end on a neat summary that restates the point. Stop on the interesting bit.
+- If you end on a question after making your point, put a blank line before it so it lands as its own short paragraph. Never tack it onto the end of the same block.
 
 STANCE AND PERSONALITY
 
@@ -770,6 +775,30 @@ if (!function_exists('konvo_break_up_em_dashes')) {
             $rebuilt[] = $joined;
         }
         return implode("\n\n", $rebuilt);
+    }
+}
+
+if (!function_exists('konvo_break_before_closing_question')) {
+    // A closing question glued onto the end of a wall of declarative sentences reads as one
+    // dense block. If the text ends in a question preceded by other sentences in the same
+    // paragraph, split that last question into its own paragraph.
+    function konvo_break_before_closing_question(string $text): string
+    {
+        $rtrimmed = rtrim($text);
+        if ($rtrimmed === '' || substr($rtrimmed, -1) !== '?') return $text;
+        $paragraphs = preg_split('/\n{2,}/', $rtrimmed);
+        if (!is_array($paragraphs) || $paragraphs === array()) return $text;
+        $lastIdx = count($paragraphs) - 1;
+        $lastPara = $paragraphs[$lastIdx];
+        if (!preg_match('/^(.*[.!?])\s+([^.!?]*\?)$/us', $lastPara, $m)) {
+            return $text;
+        }
+        $before = trim($m[1]);
+        $question = trim($m[2]);
+        if ($before === '' || $question === '') return $text;
+        $paragraphs[$lastIdx] = $before;
+        $paragraphs[] = $question;
+        return implode("\n\n", $paragraphs);
     }
 }
 

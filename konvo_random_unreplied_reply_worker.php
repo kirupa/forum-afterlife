@@ -3909,6 +3909,10 @@ function worker_enforce_banned_phrase_cleanup($text)
     }
     $out = trim(implode('', $segments));
     $out = preg_replace('/\n{3,}/', "\n\n", (string)$out);
+    $out = trim((string)$out);
+    if (function_exists('konvo_break_before_closing_question')) {
+        $out = konvo_break_before_closing_question($out);
+    }
     return trim((string)$out);
 }
 

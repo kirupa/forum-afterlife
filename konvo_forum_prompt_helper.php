@@ -40,6 +40,30 @@ if (!function_exists('konvo_break_up_em_dashes')) {
     }
 }
 
+if (!function_exists('konvo_break_before_closing_question')) {
+    // A closing question glued onto the end of a wall of declarative sentences reads as one
+    // dense block. If the text ends in a question preceded by other sentences in the same
+    // paragraph, split that last question into its own paragraph.
+    function konvo_break_before_closing_question(string $text): string
+    {
+        $rtrimmed = rtrim($text);
+        if ($rtrimmed === '' || substr($rtrimmed, -1) !== '?') return $text;
+        $paragraphs = preg_split('/\n{2,}/', $rtrimmed);
+        if (!is_array($paragraphs) || $paragraphs === array()) return $text;
+        $lastIdx = count($paragraphs) - 1;
+        $lastPara = $paragraphs[$lastIdx];
+        if (!preg_match('/^(.*[.!?])\s+([^.!?]*\?)$/us', $lastPara, $m)) {
+            return $text;
+        }
+        $before = trim($m[1]);
+        $question = trim($m[2]);
+        if ($before === '' || $question === '') return $text;
+        $paragraphs[$lastIdx] = $before;
+        $paragraphs[] = $question;
+        return implode("\n\n", $paragraphs);
+    }
+}
+
 if (!function_exists('konvo_natural_forum_responder_prompt')) {
     function konvo_natural_forum_responder_prompt(): string
     {
@@ -212,6 +236,7 @@ FORMATTING RULES
 - Don't use headers or bold text unless you're writing something genuinely long
 - Don't use numbered steps unless you're giving actual instructions someone asked for
 - Line-break rule: when a reply has two distinct ideas, split them into separate paragraphs with a blank line. Dense wall-of-text paragraphs do not feel like real forum posts.
+- Closing-question rule: if you end on a question after making your point, put a blank line before that question so it lands as its own short paragraph. Never tack it onto the end of the same paragraph as your point.
 - A reply can just be: "lol yeah this happened to me too, I ended up just switching to [X] and never looked back"
 
 WHAT MAKES A GREAT FORUM REPLY
@@ -301,6 +326,7 @@ if (!function_exists('konvo_compose_forum_persona_system_prompt')) {
             . "- Skeptic pass (mandatory): before finalizing, privately ask what a skeptical or mildly contrarian poster would say here. If that view adds value, prefer it over polite agreement.\n"
             . "- Length variety rule: one sentence, a sentence fragment, or a 1-5 word reaction can be the best answer if it feels more human than a paragraph.\n"
             . "- Line-break rule: if a reply has a main answer and then a follow-on explanation, put a blank line between them. Prefer two short paragraphs over one dense block.\n"
+            . "- Closing-question rule: if you end on a question after making your point, put a blank line before it so it lands as its own short paragraph, not tacked onto the end of the same block.\n"
             . "- Outside your expertise lanes, do not present expert certainty; ask, hedge, or skip.\n"
             . "- Post-generation safety check: if banned phrases appear, rewrite those lines before final output."
         );
@@ -345,6 +371,7 @@ Talking to people
 Length
 - Short is good. One sentence is fine. A 1-5 word reaction is fine sometimes too.
 - If the thread already has enough context, do not pad. A tiny skeptical line can add more than a careful paragraph.
+- If you end on a question, give it its own paragraph with a blank line before it. Don't tack it onto the end of your point in the same block - that's what makes a post read like a wall of text.
 
 Never say
 - Openers: "Great point", "This resonates", "I've been thinking about this a lot", "Absolutely", "100%", "Look —".
