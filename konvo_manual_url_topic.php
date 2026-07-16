@@ -235,6 +235,8 @@ function konvo_manual_resolve_url($base, $maybeRelative)
     return rtrim($origin . dirname((string)($baseParts['path'] ?? '/')), '/') . '/' . $maybeRelative;
 }
 
+// Fallback only, used when the model forgot the [[IMAGE]] marker: insert after
+// the first paragraph rather than trying to guess a sentence boundary.
 function konvo_manual_insert_image_into_body($raw, $imageMarkdown)
 {
     $imageMarkdown = trim((string)$imageMarkdown);
@@ -246,13 +248,33 @@ function konvo_manual_insert_image_into_body($raw, $imageMarkdown)
     return trim((string)$raw) . "\n\n" . $imageMarkdown;
 }
 
+// The model is instructed to place a [[IMAGE]] marker right after the sentence
+// that introduces the post's main theme - that's a semantic call the model can
+// make far better than a mechanical paragraph split. Swap it for real markdown
+// when an image exists, or remove it cleanly (collapsing the blank lines it
+// left behind) when there isn't one.
+function konvo_manual_resolve_image_marker($raw, $imageMarkdown)
+{
+    $marker = '[[IMAGE]]';
+    $hasMarker = strpos((string)$raw, $marker) !== false;
+    if ($imageMarkdown !== '') {
+        if ($hasMarker) {
+            return str_replace($marker, $imageMarkdown, $raw);
+        }
+        return konvo_manual_insert_image_into_body($raw, $imageMarkdown);
+    }
+    if (!$hasMarker) return $raw;
+    $raw = preg_replace('/\n{1,}[ \t]*\[\[IMAGE\]\][ \t]*\n{1,}/', "\n\n", $raw) ?? $raw;
+    $raw = str_replace($marker, '', $raw);
+    $raw = preg_replace('/\n{3,}/', "\n\n", $raw) ?? $raw;
+    return trim((string)$raw);
+}
+
 function konvo_manual_try_attach_image($url, $pageImageUrl, $raw)
 {
     $imageUrl = konvo_manual_resolve_url($url, $pageImageUrl);
-    if ($imageUrl === '' || !konvo_manual_url_is_safe($imageUrl)) {
-        return $raw;
-    }
-    return konvo_manual_insert_image_into_body($raw, '![image](' . $imageUrl . ')');
+    $imageMarkdown = ($imageUrl !== '' && konvo_manual_url_is_safe($imageUrl)) ? '![image](' . $imageUrl . ')' : '';
+    return konvo_manual_resolve_image_marker($raw, $imageMarkdown);
 }
 
 function konvo_manual_normalize_title($title)
@@ -348,6 +370,7 @@ function konvo_manual_generate_draft($bot, $url, $pageTitle, $pageDescription, $
         . "- Do NOT include the URL anywhere in the body text and do NOT write your own \"source\" or link line - it is added automatically after your text.\n"
         . "- If human guidance is given below, treat it as what to emphasize or the angle to take, and follow it closely.\n"
         . "- No sign-off line, no hashtags, no emoji spam.\n"
+        . "- Immediately after the sentence that introduces the main theme/subject of the post, insert the exact marker [[IMAGE]] alone on its own line, with a blank line before and after it. Always include this marker exactly once, even though you don't know yet whether an image will actually be placed there.\n"
         . "Return ONLY JSON: {\"title\":\"...\",\"raw\":\"...\"}.";
 
     $user = "Link: {$url}\n"
@@ -542,9 +565,9 @@ if ($action === 'draft') {
         exit;
     }
 
-    if (!empty($meta['image'])) {
-        $draft['raw'] = konvo_manual_try_attach_image($url, (string)$meta['image'], $draft['raw']);
-    }
+    // Always resolve the [[IMAGE]] marker, even with no page image found -
+    // otherwise the literal marker text would leak into the live post.
+    $draft['raw'] = konvo_manual_try_attach_image($url, (string)($meta['image'] ?? ''), $draft['raw']);
 
     $categoryKey = konvo_manual_pick_category($draft['title'], $draft['raw']);
 

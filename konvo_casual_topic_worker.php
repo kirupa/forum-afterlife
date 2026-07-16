@@ -863,6 +863,8 @@ function casual_fetch_page_html(string $url): array
     return array('ok' => true, 'body' => (string)substr((string)$body, 0, 400000));
 }
 
+// Fallback only, used when the model forgot the [[IMAGE]] marker: insert after
+// the first paragraph rather than trying to guess a sentence boundary.
 function casual_insert_image_into_body(string $raw, string $imageMarkdown): string
 {
     $imageMarkdown = trim($imageMarkdown);
@@ -874,17 +876,45 @@ function casual_insert_image_into_body(string $raw, string $imageMarkdown): stri
     return trim($raw) . "\n\n" . $imageMarkdown;
 }
 
-// Best-effort only: any failure along the way (page fetch or no og:image) just
-// leaves the post as plain text - never blocks posting. References the image
-// directly from the article's own host rather than re-hosting it.
+// The model is instructed to place a [[IMAGE]] marker right after the sentence
+// that introduces the post's main theme - that's a semantic call the model can
+// make far better than a mechanical paragraph split. Swap it for real markdown
+// when an image exists, or remove it cleanly (collapsing the blank lines it
+// left behind) when there isn't one. Must always run, even when there is no
+// seed URL at all, or the literal marker text would leak into the live post.
+function casual_resolve_image_marker(string $raw, string $imageMarkdown): string
+{
+    $marker = '[[IMAGE]]';
+    $hasMarker = strpos($raw, $marker) !== false;
+    if ($imageMarkdown !== '') {
+        if ($hasMarker) {
+            return str_replace($marker, $imageMarkdown, $raw);
+        }
+        return casual_insert_image_into_body($raw, $imageMarkdown);
+    }
+    if (!$hasMarker) return $raw;
+    $raw = preg_replace('/\n{1,}[ \t]*\[\[IMAGE\]\][ \t]*\n{1,}/', "\n\n", $raw) ?? $raw;
+    $raw = str_replace($marker, '', $raw);
+    $raw = preg_replace('/\n{3,}/', "\n\n", $raw) ?? $raw;
+    return trim($raw);
+}
+
+// Best-effort only: any failure along the way (no seed URL, page fetch, or no
+// og:image) just leaves the post as plain text - never blocks posting.
+// References the image directly from the article's own host, no re-hosting.
 function casual_try_attach_seed_image(string $seedUrl, string $raw): string
 {
-    if ($seedUrl === '' || !preg_match('#^https?://#i', $seedUrl)) return $raw;
-    $page = casual_fetch_page_html($seedUrl);
-    if (empty($page['ok'])) return $raw;
-    $imageUrl = casual_resolve_url($seedUrl, casual_extract_og_image((string)$page['body']));
-    if ($imageUrl === '') return $raw;
-    return casual_insert_image_into_body($raw, '![image](' . $imageUrl . ')');
+    $imageMarkdown = '';
+    if ($seedUrl !== '' && preg_match('#^https?://#i', $seedUrl)) {
+        $page = casual_fetch_page_html($seedUrl);
+        if (!empty($page['ok'])) {
+            $imageUrl = casual_resolve_url($seedUrl, casual_extract_og_image((string)$page['body']));
+            if ($imageUrl !== '') {
+                $imageMarkdown = '![image](' . $imageUrl . ')';
+            }
+        }
+    }
+    return casual_resolve_image_marker($raw, $imageMarkdown);
 }
 
 function casual_pick_interesting_news_seed(array $recentLocal, array $recentForumTitles): array
@@ -1729,7 +1759,8 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . 'The seed comes from a live article. Do NOT summarize it like a digest. React to it like a person who just read it and has one real thought. '
         . 'Keep titles concise, complete, and natural. '
         . 'Keep the body short, conversational, and human. '
-        . 'No code blocks, no hashtags, no sign-off line.';
+        . 'No code blocks, no hashtags, no sign-off line. '
+        . 'Immediately after the sentence that introduces the main theme/subject of the post, insert the exact marker [[IMAGE]] alone on its own line, with a blank line before and after it. Always include this marker exactly once, even though you do not know yet whether an image will actually be placed there.';
 
     $user = "Seed topic: {$seedTopic}\n"
         . "Seed kind: {$seedKind}\n"
