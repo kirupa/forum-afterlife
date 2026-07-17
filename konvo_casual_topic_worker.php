@@ -216,12 +216,11 @@ function casual_load_seen_urls(): array
 
 function casual_save_seen_urls(array $seen): void
 {
-    $now = time();
-    foreach ($seen as $url => $ts) {
-        if (($now - (int)$ts) > 30 * 24 * 3600) {
-            unset($seen[$url]);
-        }
-    }
+    // No time-based expiry: reusing the exact same external article as a "new" seed
+    // is never good regardless of how much time passed (a 30-day cutoff let this exact
+    // recur every couple months once the source feed re-surfaced it). Matches
+    // konvo_random_topic_worker.php's save_seen_urls(), which is already permanent and
+    // only bounded by count.
     arsort($seen);
     $seen = array_slice($seen, 0, 600, true);
     @file_put_contents(casual_seen_urls_path(), json_encode($seen, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
