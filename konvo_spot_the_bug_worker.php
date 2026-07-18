@@ -812,6 +812,34 @@ function spot_pick_case(array $state): array
     return $picked;
 }
 
+function spot_title_case_word(string $w): string
+{
+    if ($w === '') return '';
+    // Keep short all-caps acronyms (DOM, CSS, API) as-is rather than title-casing them,
+    // whether the source already capitalized them or not (theme slugs are lowercase).
+    $acronyms = array('css', 'dom', 'api', 'html', 'json', 'sql', 'ui', 'ux', 'url');
+    if (in_array(strtolower($w), $acronyms, true)) {
+        return strtoupper($w);
+    }
+    if (preg_match('/^[A-Z0-9]{2,6}$/', $w)) return $w;
+    return mb_strtoupper(mb_substr($w, 0, 1)) . mb_substr($w, 1);
+}
+
+function spot_derive_title_summary(array $case): string
+{
+    $source = trim((string)($case['ui_surface'] ?? ''));
+    if ($source === '') {
+        $source = str_replace(array('-', '_'), ' ', trim((string)($case['theme'] ?? '')));
+    }
+    if ($source === '') return '';
+    $words = preg_split('/\s+/', trim($source)) ?: array();
+    $words = array_values(array_filter(array_map('trim', $words)));
+    if ($words === array()) return '';
+    $words = array_slice($words, 0, 3);
+    $words = array_map('spot_title_case_word', $words);
+    return trim(implode(' ', $words));
+}
+
 function spot_build_raw(array $case, string $signature): string
 {
     $lead = trim((string)($case['lead'] ?? 'Spot the bug in this snippet.'));
@@ -900,10 +928,10 @@ if (!$dryRun && !$allowNewTopics && !$force) {
 $state = spot_load_state();
 $lastNumber = (int)($state['last_number'] ?? 0);
 $nextNumber = max(1, $lastNumber + 1);
-$title = 'Spot the bug - #' . $nextNumber;
+$titleBase = 'Spot the bug - #' . $nextNumber;
 
 $bot = spot_pick_bot($bots);
-$signatureSeed = strtolower((string)($bot['username'] ?? '') . '|' . $title . '|spot-the-bug');
+$signatureSeed = strtolower((string)($bot['username'] ?? '') . '|' . $titleBase . '|spot-the-bug');
 $botSignature = function_exists('konvo_signature_with_optional_emoji')
     ? konvo_signature_with_optional_emoji((string)($bot['name'] ?? 'BayMax'), $signatureSeed)
     : (function_exists('konvo_signature_base_name')
@@ -911,6 +939,8 @@ $botSignature = function_exists('konvo_signature_with_optional_emoji')
         : (string)($bot['name'] ?? 'BayMax'));
 $case = spot_pick_case($state);
 $raw = spot_build_raw($case, $botSignature);
+$titleSummary = spot_derive_title_summary($case);
+$title = $titleSummary !== '' ? $titleBase . ': ' . $titleSummary : $titleBase;
 
 if ($dryRun) {
     spot_out(200, array(
