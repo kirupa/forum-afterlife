@@ -4047,6 +4047,162 @@ function pick_candidate_topic($topics, $seenState)
     return $pool[0];
 }
 
+function worker_is_quiz_verdict_topic_title($title)
+{
+    $t = strtolower(trim((string)$title));
+    if ($t === '') return false;
+    return (str_starts_with($t, 'spot the bug') || str_starts_with($t, 'js quiz:'));
+}
+
+// "Spot the Bug" and "JS Quiz" threads are challenges: when a human posts a text
+// reply guessing the bug/answer, they should get a direct verdict (right or wrong)
+// promptly, not just folded into the general conversational reply pool. Checked
+// on every run (ahead of consensus/orphan picks) so it lands well within 24h.
+function worker_find_quiz_verdict_target($topics, $seenState, $maxScan = 20)
+{
+    if (!is_array($topics) || $topics === array()) return null;
+    $pool = array();
+    foreach ($topics as $t) {
+        if (!is_array($t)) continue;
+        $topicId = isset($t['id']) ? (int)$t['id'] : 0;
+        $title = isset($t['title']) ? (string)$t['title'] : '';
+        $visible = isset($t['visible']) ? (bool)$t['visible'] : true;
+        $closed = isset($t['closed']) ? (bool)$t['closed'] : false;
+        $archived = isset($t['archived']) ? (bool)$t['archived'] : false;
+        $postsCount = isset($t['posts_count']) ? (int)$t['posts_count'] : 0;
+        if ($topicId <= 0 || !$visible || $closed || $archived) continue;
+        if ($postsCount < 2) continue;
+        if (!worker_is_quiz_verdict_topic_title($title)) continue;
+        $idKey = 'quizverdict:' . $topicId;
+        $seenAt = isset($seenState[$idKey]) ? (int)$seenState[$idKey] : 0;
+        if ($seenAt > 0 && (time() - $seenAt) < (3 * 3600)) continue;
+        $pool[] = $t;
+    }
+    if ($pool === array()) return null;
+    shuffle($pool);
+    $pool = array_slice($pool, 0, max(5, (int)$maxScan));
+
+    foreach ($pool as $topic) {
+        $topicId = (int)($topic['id'] ?? 0);
+        $detail = fetch_json(rtrim(KONVO_BASE_URL, '/') . '/t/' . $topicId . '.json', array(
+            'Api-Key: ' . KONVO_DISCOURSE_API_KEY,
+            'Api-Username: BayMax',
+        ));
+        if (!is_array($detail) || !isset($detail['post_stream']['posts']) || !is_array($detail['post_stream']['posts'])) continue;
+        $posts = $detail['post_stream']['posts'];
+        if (count($posts) < 2) continue;
+        $opPost = $posts[0];
+        $latestPost = $posts[count($posts) - 1];
+        $latestUsername = trim((string)($latestPost['username'] ?? ''));
+        if ($latestUsername === '' || is_bot_user($latestUsername)) continue;
+        $opRaw = post_content_text($opPost);
+        $humanRaw = post_content_text($latestPost);
+        if ($opRaw === '' || $humanRaw === '') continue;
+        return array(
+            'topic' => $topic,
+            'topic_id' => $topicId,
+            'op_raw' => $opRaw,
+            'human_raw' => $humanRaw,
+            'human_username' => $latestUsername,
+            'human_post_number' => (int)($latestPost['post_number'] ?? 0),
+        );
+    }
+    return null;
+}
+
+function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRun)
+{
+    $topic = $target['topic'];
+    $topicId = (int)$target['topic_id'];
+    $topicTitle = trim((string)($topic['title'] ?? ''));
+    $opRaw = (string)$target['op_raw'];
+    $humanRaw = (string)$target['human_raw'];
+    $humanUsername = (string)$target['human_username'];
+    $isSpotTheBug = stripos($topicTitle, 'spot the bug') !== false;
+
+    $bot = pick_bot($bots, $humanUsername);
+    $signature = isset($bot['signature']) ? (string)$bot['signature'] : (string)($bot['username'] ?? 'Bot');
+    $soulKey = isset($bot['soul_key']) ? (string)$bot['soul_key'] : strtolower($signature);
+    $soul = function_exists('konvo_compose_forum_persona_system_prompt')
+        ? konvo_compose_forum_persona_system_prompt(konvo_load_soul($soulKey, 'Write naturally, concise, and human.'))
+        : 'Write naturally, concise, and human.';
+
+    $kind = $isSpotTheBug ? 'a "Spot the Bug" code challenge' : 'a JS quiz question';
+    $system = trim((string)$soul) . "\n\n"
+        . "You are judging whether a human correctly answered {$kind}. "
+        . "Read the original post below (it contains the code/question, and for Spot the Bug the correct bug/fix is not spelled out - you must work it out yourself). "
+        . "Independently work out what the actual bug or correct answer is, then judge whether the human's reply substantively identifies it - it does not need to be word-for-word. "
+        . "Write a short, natural, in-character forum reply directly to them: clearly confirm whether they got it right, and briefly state the actual answer/fix in your own words. "
+        . "1 to 3 sentences. No essay, no headers, no bullet list, no em dash, no sign-off line.\n"
+        . "Return ONLY JSON: {\"correct\": true or false, \"reply\": \"...\"}.";
+    $user = "Original post:\n{$opRaw}\n\n"
+        . "Human's reply (@{$humanUsername}):\n{$humanRaw}\n\n"
+        . "Write your verdict reply now.";
+
+    $payload = array(
+        'model' => worker_model_for_task('reply_generation'),
+        'messages' => array(
+            array('role' => 'system', 'content' => $system),
+            array('role' => 'user', 'content' => $user),
+        ),
+        'temperature' => 0.7,
+    );
+    $res = post_json(
+        'https://api.openai.com/v1/chat/completions',
+        $payload,
+        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+    );
+    if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
+        return array('ok' => false, 'error' => 'OpenAI request failed for quiz verdict.');
+    }
+    $content = trim((string)$res['body']['choices'][0]['message']['content']);
+    $obj = worker_extract_json_object($content);
+    if (!is_array($obj) || !isset($obj['reply'])) {
+        return array('ok' => false, 'error' => 'Could not parse verdict JSON.');
+    }
+    $replyText = trim((string)$obj['reply']);
+    if ($replyText === '') {
+        return array('ok' => false, 'error' => 'Empty verdict reply.');
+    }
+    if (function_exists('worker_enforce_banned_phrase_cleanup')) {
+        $replyText = worker_enforce_banned_phrase_cleanup($replyText);
+    }
+    $replyText = normalize_signature($replyText, $signature);
+    $correct = (bool)($obj['correct'] ?? false);
+
+    if ($dryRun) {
+        return array(
+            'ok' => true,
+            'dry_run' => true,
+            'topic_id' => $topicId,
+            'bot' => $bot,
+            'correct' => $correct,
+            'reply_preview' => $replyText,
+        );
+    }
+
+    $postRes = post_json(
+        rtrim(KONVO_BASE_URL, '/') . '/posts.json',
+        array(
+            'topic_id' => $topicId,
+            'raw' => $replyText,
+            'reply_to_post_number' => (int)$target['human_post_number'],
+        ),
+        array(
+            'Api-Key: ' . KONVO_DISCOURSE_API_KEY,
+            'Api-Username: ' . (string)($bot['username'] ?? 'BayMax'),
+        )
+    );
+    return array(
+        'ok' => (bool)($postRes['ok'] ?? false),
+        'topic_id' => $topicId,
+        'bot' => $bot,
+        'correct' => $correct,
+        'reply_text' => $replyText,
+        'post_result' => $postRes,
+    );
+}
+
 function worker_pick_orphan_bot_topic_over_24h($topics, $seenState, $maxScan = 30)
 {
     if (!is_array($topics) || $topics === array()) return null;
@@ -5403,6 +5559,17 @@ if (!is_array($latest) || !isset($latest['topic_list']['topics']) || !is_array($
 }
 
 $seen = load_seen_topics();
+
+$quizVerdictTarget = worker_find_quiz_verdict_target($latest['topic_list']['topics'], $seen, 20);
+if (is_array($quizVerdictTarget)) {
+    $verdictResult = worker_generate_and_post_quiz_verdict($bots, $quizVerdictTarget, $dryRun);
+    if (!$dryRun) {
+        $seen['quizverdict:' . (int)$quizVerdictTarget['topic_id']] = time();
+        save_seen_topics($seen);
+    }
+    out_json(200, array_merge(array('ok' => (bool)($verdictResult['ok'] ?? false), 'action' => 'quiz_verdict_reply'), $verdictResult));
+}
+
 $consensusState = worker_consensus_load();
 $consensusPick = worker_pick_consensus_topic($latest['topic_list']['topics'], $consensusState, $seen);
 $consensusFlowActive = is_array($consensusPick) && isset($consensusPick['topic']) && is_array($consensusPick['topic']);
