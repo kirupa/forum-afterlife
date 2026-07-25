@@ -65,9 +65,12 @@ if (!function_exists('konvo_anthropic_chat_json')) {
             return array('ok' => false, 'error' => 'No user/assistant messages to send.');
         }
 
-        $maxTokens = (int)($payload['max_tokens'] ?? ($payload['max_completion_tokens'] ?? 1024));
+        // Default generously: several workers omit max_tokens, and a truncated reply
+        // surfaces downstream as "model returned non-JSON content" rather than as an
+        // obvious length error.
+        $maxTokens = (int)($payload['max_tokens'] ?? ($payload['max_completion_tokens'] ?? 2048));
         if ($maxTokens < 1) {
-            $maxTokens = 1024;
+            $maxTokens = 2048;
         }
 
         $anthropicPayload = array(
