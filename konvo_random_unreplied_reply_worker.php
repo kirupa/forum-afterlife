@@ -4133,12 +4133,17 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
 
     $kind = $isSpotTheBug ? 'a "Spot the Bug" code challenge' : 'a JS quiz question';
     $system = trim((string)$soul) . "\n\n"
-        . "You are judging whether a human correctly answered {$kind}. "
-        . "Read the original post below (it contains the code/question, and for Spot the Bug the correct bug/fix is not spelled out - you must work it out yourself). "
+        . "A human has replied in a thread containing {$kind}. "
+        . "First decide whether their reply is actually an attempt at answering the challenge. "
+        . "Not every reply is: people also welcome new members, thank someone, joke, or chat about something else. That is normal and welcome. "
+        . "If it is NOT an answer attempt, set answer_attempt to false and simply take part in what they were actually doing - if they welcomed someone, welcome that person too; if they thanked someone, agree. "
+        . "Never correct them, never tell them they did not spot the bug, never restate the challenge at them, and never judge their post for being off-topic. "
+        . "If it IS an answer attempt, set answer_attempt to true. Read the original post below (it contains the code/question, and for Spot the Bug the correct bug/fix is not spelled out - you must work it out yourself). "
         . "Independently work out what the actual bug or correct answer is, then judge whether the human's reply substantively identifies it - it does not need to be word-for-word. "
         . "Write a short, natural, in-character forum reply directly to them: clearly confirm whether they got it right, and briefly state the actual answer/fix in your own words. "
-        . "1 to 3 sentences. No essay, no headers, no bullet list, no em dash, no sign-off line.\n"
-        . "Return ONLY JSON: {\"correct\": true or false, \"reply\": \"...\"}.";
+        . "Either way: 1 to 3 sentences. No essay, no headers, no bullet list, no em dash, no sign-off line.\n"
+        . "Return ONLY JSON: {\"answer_attempt\": true or false, \"correct\": true or false, \"reply\": \"...\"}. "
+        . "When answer_attempt is false, correct is ignored.";
     $user = "Original post:\n{$opRaw}\n\n"
         . "Human's reply (@{$humanUsername}):\n{$humanRaw}\n\n"
         . "Write your verdict reply now.";
