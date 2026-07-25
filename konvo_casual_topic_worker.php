@@ -10,6 +10,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/konvo_soul_helper.php';
@@ -25,13 +27,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 if (!defined('KONVO_ALLOW_CASUAL_TOPIC_POSTS')) define('KONVO_ALLOW_CASUAL_TOPIC_POSTS', trim((string)getenv('KONVO_ALLOW_CASUAL_TOPIC_POSTS')));
 if (!defined('KONVO_CASUAL_DAY_TZ')) define('KONVO_CASUAL_DAY_TZ', trim((string)getenv('KONVO_CASUAL_DAY_TZ')) !== '' ? trim((string)getenv('KONVO_CASUAL_DAY_TZ')) : 'America/Los_Angeles');
@@ -951,7 +952,7 @@ function casual_pick_interesting_news_seed(array $recentLocal, array $recentForu
         );
     }
 
-    if (KONVO_OPENAI_API_KEY !== '') {
+    if (KONVO_ANTHROPIC_API_KEY !== '') {
         $candidateLines = array();
         foreach ($candidates as $idx => $item) {
             $candidateLines[] = ($idx + 1) . '. '
@@ -972,7 +973,7 @@ function casual_pick_interesting_news_seed(array $recentLocal, array $recentForu
             ),
             'temperature' => 0.35,
         );
-        $res = casual_openai_json($payload);
+        $res = casual_llm_json($payload);
         if (!empty($res['ok'])) {
             $content = trim((string)($res['json']['choices'][0]['message']['content'] ?? ''));
             $obj = casual_extract_json_object($content);
@@ -1129,7 +1130,7 @@ function casual_candidate_too_close_to_recent_local(string $candidateTitle, stri
 
 function casual_uniqueness_gate_with_llm(string $candidateTitle, string $candidateRaw, array $recentLocal, array $recentForum): array
 {
-    if (KONVO_OPENAI_API_KEY === '') {
+    if (KONVO_ANTHROPIC_API_KEY === '') {
         return array('ok' => true, 'passes' => true, 'score' => 3.5, 'reason' => 'no_api_key_skip');
     }
 
@@ -1159,7 +1160,7 @@ function casual_uniqueness_gate_with_llm(string $candidateTitle, string $candida
         'temperature' => 0.1,
     );
 
-    $res = casual_openai_json($payload);
+    $res = casual_llm_json($payload);
     if (!$res['ok']) {
         return array('ok' => false, 'passes' => false, 'score' => 0.0, 'reason' => 'uniqueness_llm_error');
     }
@@ -1528,40 +1529,20 @@ function casual_extract_json_object(string $content): array
     return is_array($decoded) ? $decoded : array();
 }
 
-function casual_openai_json(array $payload): array
+function casual_llm_json(array $payload): array
 {
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'status' => 0, 'error' => 'curl_init unavailable', 'json' => array(), 'raw' => '');
     }
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 40,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $body = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false || $err !== '') {
-        return array('ok' => false, 'status' => $status, 'error' => $err, 'json' => array(), 'raw' => '');
-    }
-
-    $decoded = json_decode((string)$body, true);
+    $res = konvo_anthropic_chat_json($payload, 60);
+    $json = is_array($res['body'] ?? null) ? $res['body'] : array();
     return array(
-        'ok' => ($status >= 200 && $status < 300 && is_array($decoded)),
-        'status' => $status,
-        'error' => '',
-        'json' => is_array($decoded) ? $decoded : array(),
-        'raw' => (string)$body,
+        'ok' => (bool)($res['ok'] ?? false),
+        'status' => (int)($res['status'] ?? 0),
+        'error' => (string)($res['error'] ?? ''),
+        'json' => $json,
+        'raw' => $json === array() ? '' : (string)json_encode($json, JSON_UNESCAPED_SLASHES),
     );
 }
 
@@ -1574,7 +1555,7 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
         'reason' => 'category_llm_unavailable_fallback_talk',
         'confidence' => 0.0,
     );
-    if (KONVO_OPENAI_API_KEY === '') {
+    if (KONVO_ANTHROPIC_API_KEY === '') {
         return $fallback;
     }
 
@@ -1609,7 +1590,7 @@ function casual_pick_category_with_llm(string $title, string $raw, array $bot = 
         'temperature' => 0.1,
     );
 
-    $res = casual_openai_json($payload);
+    $res = casual_llm_json($payload);
     if (!$res['ok']) {
         return $fallback;
     }
@@ -1787,7 +1768,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         'temperature' => 0.9,
     );
 
-    $res = casual_openai_json($payload);
+    $res = casual_llm_json($payload);
     if (!$res['ok']) {
         return array('ok' => false, 'error' => 'OpenAI request failed', 'detail' => $res['error'], 'status' => $res['status']);
     }
@@ -1893,8 +1874,8 @@ if ($providedKey === '' || !safe_hash_equals(KONVO_SECRET, $providedKey)) {
 if (KONVO_API_KEY === '') {
     casual_out(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
-if (KONVO_OPENAI_API_KEY === '') {
-    casual_out(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') {
+    casual_out(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';

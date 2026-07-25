@@ -10,6 +10,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 $signatureHelper = __DIR__ . '/konvo_signature_helper.php';
@@ -23,14 +25,13 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.2';
+        return 'claude-sonnet-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42);
 if (!defined('KONVO_TZ')) define('KONVO_TZ', trim((string)(getenv('KONVO_TIMEZONE') ?: 'America/Los_Angeles')));
 
@@ -526,48 +527,9 @@ function spot_extract_json_object(string $content): ?array
     return is_array($decoded) ? $decoded : null;
 }
 
-function spot_openai_json(array $payload): array
+function spot_llm_json(array $payload): array
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing.');
-    }
-    if (!function_exists('curl_init')) {
-        return array('ok' => false, 'error' => 'curl_init unavailable.');
-    }
-
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 70,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-
-    if ($raw === false || $err !== '') {
-        return array('ok' => false, 'error' => ($err !== '' ? $err : 'OpenAI request failed.'));
-    }
-
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        return array('ok' => false, 'error' => 'OpenAI JSON decode failed.', 'raw' => (string)$raw, 'status' => $status);
-    }
-    if ($status < 200 || $status >= 300) {
-        $msg = '';
-        if (isset($decoded['error']['message'])) {
-            $msg = (string)$decoded['error']['message'];
-        }
-        return array('ok' => false, 'error' => ($msg !== '' ? $msg : 'OpenAI returned status ' . $status), 'body' => $decoded, 'status' => $status);
-    }
-
-    return array('ok' => true, 'body' => $decoded, 'status' => $status);
+    return konvo_anthropic_chat_json($payload, 70);
 }
 
 function spot_generate_case_llm(array $state): array
@@ -656,7 +618,7 @@ function spot_generate_case_llm(array $state): array
             ),
         );
 
-        $res = spot_openai_json($payload);
+        $res = spot_llm_json($payload);
         if (!$res['ok']) {
             $attemptErrors[] = (string)($res['error'] ?? 'OpenAI request failed');
             continue;

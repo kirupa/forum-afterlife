@@ -11,6 +11,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/konvo_soul_helper.php';
@@ -26,13 +28,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.2';
+        return 'claude-sonnet-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 if (!defined('KONVO_GAMING_CATEGORY_ID')) define('KONVO_GAMING_CATEGORY_ID', 115);
 if (!defined('KONVO_TZ')) define('KONVO_TZ', trim((string)(getenv('KONVO_TIMEZONE') ?: 'America/Los_Angeles')));
@@ -490,50 +491,22 @@ function vg_clean_text(string $text): string
     return trim((string)$text);
 }
 
-function vg_openai_chat(array $messages, float $temperature, int $maxTokens, string $task): array
+function vg_llm_chat(array $messages, float $temperature, int $maxTokens, string $task): array
 {
-    if (!function_exists('curl_init')) {
-        return array('ok' => false, 'error' => 'curl_init unavailable');
-    }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing');
-    }
-
-    $payload = array(
+    $res = konvo_anthropic_chat_json(array(
         'model' => konvo_model_for_task($task),
         'messages' => $messages,
         'temperature' => $temperature,
         'max_tokens' => $maxTokens,
-    );
-
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 45,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($raw === false || $err !== '') {
-        return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
+    ), 60);
+    if (!($res['ok'] ?? false)) {
+        return array('ok' => false, 'error' => (string)($res['error'] ?? 'Claude request failed'));
     }
-
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded) || !isset($decoded['choices'][0]['message']['content'])) {
-        return array('ok' => false, 'error' => 'OpenAI response format error');
+    $content = $res['body']['choices'][0]['message']['content'] ?? null;
+    if (!is_string($content)) {
+        return array('ok' => false, 'error' => 'Claude response format error');
     }
-    if ($status < 200 || $status >= 300) {
-        $msg = trim((string)($decoded['error']['message'] ?? 'OpenAI HTTP ' . $status));
-        return array('ok' => false, 'error' => $msg);
-    }
-    return array('ok' => true, 'text' => trim((string)$decoded['choices'][0]['message']['content']));
+    return array('ok' => true, 'text' => trim($content));
 }
 
 function vg_generate_title_once(array $article, ?array $youtube, bool $strict): array
@@ -554,7 +527,7 @@ function vg_generate_title_once(array $article, ?array $youtube, bool $strict): 
         . $strictLine . "\n"
         . "Rewrite the title in your own words so it is short and human.";
 
-    $res = vg_openai_chat(
+    $res = vg_llm_chat(
         array(
             array('role' => 'system', 'content' => $system),
             array('role' => 'user', 'content' => $user),
@@ -602,7 +575,7 @@ function vg_generate_title(array $article, ?array $youtube): array
     $second = vg_generate_title_once($article, $youtube, true);
     if (!empty($second['ok'])) return $second;
 
-    $recovery = vg_openai_chat(
+    $recovery = vg_llm_chat(
         array(
             array(
                 'role' => 'system',
@@ -662,7 +635,7 @@ function vg_generate_blurb(array $bot, array $article, ?array $youtube): string
         . "Related YouTube title: {$ytTitle}\n"
         . "Write a concise intro for a gaming forum post.";
 
-    $res = vg_openai_chat(
+    $res = vg_llm_chat(
         array(
             array('role' => 'system', 'content' => $system),
             array('role' => 'user', 'content' => $user),
@@ -713,7 +686,7 @@ function vg_generate_video_intro(array $bot, array $article, ?array $youtube): s
         . "YouTube URL: {$youtubeUrl}\n"
         . "Write one concise intro sentence for the video link.";
 
-    $res = vg_openai_chat(
+    $res = vg_llm_chat(
         array(
             array('role' => 'system', 'content' => $system),
             array('role' => 'user', 'content' => $user),
@@ -854,12 +827,23 @@ if ($providedKey === '' || !vg_safe_hash_equals(KONVO_SECRET, $providedKey)) {
 if (KONVO_API_KEY === '') {
     vg_out(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
-if (KONVO_OPENAI_API_KEY === '') {
-    vg_out(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') {
+    vg_out(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
 $force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+
+if (!$dryRun && !$allowNewTopics && !$force) {
+    vg_out(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+    ));
+}
 
 $state = vg_load_state();
 $today = date('Y-m-d');

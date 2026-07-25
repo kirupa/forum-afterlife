@@ -53,6 +53,7 @@ register_shutdown_function(static function (): void {
 
 require_once __DIR__ . '/konvo_soul_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
+require_once __DIR__ . '/konvo_anthropic_client.php';
 $konvoForumPromptHelper = __DIR__ . '/konvo_forum_prompt_helper.php';
 if (is_file($konvoForumPromptHelper)) {
     require_once $konvoForumPromptHelper;
@@ -64,13 +65,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 if (!defined('KONVO_RANDOM_TOPIC_FAST_MODE')) define('KONVO_RANDOM_TOPIC_FAST_MODE', getenv('KONVO_RANDOM_TOPIC_FAST_MODE') === false ? '1' : (string)getenv('KONVO_RANDOM_TOPIC_FAST_MODE'));
 if (!defined('KONVO_FEED_FETCH_TIMEOUT')) define('KONVO_FEED_FETCH_TIMEOUT', 8);
@@ -726,7 +726,7 @@ function konvo_pick_topic_category_decision($title, $raw, $picked = array())
         'confidence' => 0.0,
     );
     if (!function_exists('curl_init')) return $fallback;
-    if (KONVO_OPENAI_API_KEY === '') return $fallback;
+    if (KONVO_ANTHROPIC_API_KEY === '') return $fallback;
 
     $source = is_array($picked) ? trim((string)($picked['source'] ?? '')) : '';
     $sourceFeed = is_array($picked) ? trim((string)($picked['source_feed'] ?? '')) : '';
@@ -759,21 +759,12 @@ function konvo_pick_topic_category_decision($title, $raw, $picked = array())
         'temperature' => 0.1,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $rawRes = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $rawRes = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($rawRes === false || $err !== '' || $status < 200 || $status >= 300) {
         return $fallback;
@@ -1160,7 +1151,7 @@ function konvo_generate_digest_intro_with_llm($items)
 {
     if (!function_exists('curl_init')) return '';
     if (!is_array($items) || $items === array()) return '';
-    if (KONVO_OPENAI_API_KEY === '') return '';
+    if (KONVO_ANTHROPIC_API_KEY === '') return '';
 
     $headlines = array();
     foreach ($items as $item) {
@@ -1185,21 +1176,12 @@ function konvo_generate_digest_intro_with_llm($items)
         'temperature' => 0.35,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
     if ($raw === false || $err !== '' || $status < 200 || $status >= 300) return '';
 
     $decoded = json_decode((string)$raw, true);
@@ -1232,7 +1214,7 @@ function konvo_generate_digest_title_with_llm($items)
 {
     if (!function_exists('curl_init')) return array('ok' => false, 'error' => 'curl_init unavailable');
     if (!is_array($items) || $items === array()) return array('ok' => false, 'error' => 'no digest items');
-    if (KONVO_OPENAI_API_KEY === '') return array('ok' => false, 'error' => 'OPENAI_API_KEY missing');
+    if (KONVO_ANTHROPIC_API_KEY === '') return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY missing');
 
     $headlines = array();
     foreach ($items as $item) {
@@ -1263,21 +1245,12 @@ function konvo_generate_digest_title_with_llm($items)
         'temperature' => 0.55,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
     if ($raw === false || $err !== '') return array('ok' => false, 'error' => 'OpenAI error: ' . $err, 'status' => $status);
     $decoded = json_decode((string)$raw, true);
     if (!is_array($decoded) || !isset($decoded['choices'][0]['message']['content'])) return array('ok' => false, 'error' => 'OpenAI response format error', 'status' => $status);
@@ -1528,8 +1501,8 @@ function konvo_generate_body_summary_with_llm($bot, $item, $strict)
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => 'curl_init unavailable');
     }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.');
     }
 
     $url = isset($item['url']) ? trim((string)$item['url']) : '';
@@ -1575,22 +1548,12 @@ function konvo_generate_body_summary_with_llm($bot, $item, $strict)
         'temperature' => 0.7,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($raw === false || $err !== '') {
         return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
@@ -1653,8 +1616,8 @@ function konvo_generate_image_lead_with_llm($bot, $item, $strict)
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => 'curl_init unavailable');
     }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.');
     }
 
     $url = isset($item['url']) ? trim((string)$item['url']) : '';
@@ -1696,22 +1659,12 @@ function konvo_generate_image_lead_with_llm($bot, $item, $strict)
         'temperature' => 0.7,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($raw === false || $err !== '') {
         return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
@@ -1770,8 +1723,8 @@ function konvo_generate_gaming_video_lead_with_llm($bot, $item, $youtubeUrl, $st
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => 'curl_init unavailable');
     }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.');
     }
 
     $url = isset($item['url']) ? trim((string)$item['url']) : '';
@@ -1811,21 +1764,12 @@ function konvo_generate_gaming_video_lead_with_llm($bot, $item, $youtubeUrl, $st
         'temperature' => 0.7,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $raw = curl_exec($ch);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($raw === false || $err !== '') {
         return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
@@ -2015,8 +1959,8 @@ function konvo_generate_title_with_llm($item, $strict)
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => 'curl_init unavailable');
     }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.');
     }
 
     $url = isset($item['url']) ? trim((string)$item['url']) : '';
@@ -2055,22 +1999,12 @@ function konvo_generate_title_with_llm($item, $strict)
         'temperature' => 0.6,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($raw === false || $err !== '') {
         return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
@@ -2331,8 +2265,8 @@ if ($providedKey === '' || !safe_hash_equals(KONVO_SECRET, $providedKey)) {
 if (KONVO_API_KEY === '') {
     out_json(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
-if (KONVO_OPENAI_API_KEY === '') {
-    out_json(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') {
+    out_json(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';

@@ -15,9 +15,9 @@ if (!function_exists('konvo_model_tiers')) {
         $l = trim((string)getenv('MODEL_TIER_L'));
 
         $tiers = [
-            's' => $s !== '' ? $s : 'gpt-5.4-mini',
-            'm' => $m !== '' ? $m : 'gpt-5.2',
-            'l' => $l !== '' ? $l : 'gpt-5.4',
+            's' => $s !== '' ? $s : 'claude-haiku-4-5',
+            'm' => $m !== '' ? $m : 'claude-sonnet-5',
+            'l' => $l !== '' ? $l : 'claude-opus-5',
         ];
         return $tiers;
     }
@@ -38,6 +38,13 @@ if (!function_exists('konvo_model_for_task')) {
             case 'article_image_lead':
             case 'casual_topic':
             case 'reply_ack':
+            // Classification / short-pick tasks: fast tier is sufficient and
+            // keeps multi-call workers under the gateway timeout.
+            case 'article_video_lead':
+            case 'casual_topic_seed_pick':
+            case 'low_effort_reaction':
+            case 'topic_category':
+            case 'topic_uniqueness':
                 return $tiers['s'];
 
             case 'quality_hard':

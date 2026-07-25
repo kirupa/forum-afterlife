@@ -11,6 +11,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 if (!function_exists('js_quiz_internal_error_out')) {
@@ -54,14 +56,13 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.2';
+        return 'claude-sonnet-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_CATEGORY_ID')) define('KONVO_CATEGORY_ID', 42);
 if (!defined('KONVO_TZ')) define('KONVO_TZ', trim((string)(getenv('KONVO_TIMEZONE') ?: 'America/Los_Angeles')));
 
@@ -420,41 +421,9 @@ function js_quiz_save_state($state)
     @file_put_contents(js_quiz_state_path(), json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 }
 
-function js_quiz_openai_json(array $payload): array
+function js_quiz_llm_json(array $payload): array
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing.');
-    }
-    if (!function_exists('curl_init')) {
-        return array('ok' => false, 'error' => 'curl_init unavailable.');
-    }
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 70,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($raw === false || $err !== '') {
-        return array('ok' => false, 'error' => ($err !== '' ? $err : 'OpenAI request failed.'));
-    }
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        return array('ok' => false, 'error' => 'OpenAI JSON decode failed.');
-    }
-    if ($status < 200 || $status >= 300) {
-        $msg = trim((string)($decoded['error']['message'] ?? ''));
-        return array('ok' => false, 'error' => ($msg !== '' ? $msg : 'OpenAI returned status ' . $status));
-    }
-    return array('ok' => true, 'body' => $decoded);
+    return konvo_anthropic_chat_json($payload, 70);
 }
 
 function js_quiz_extract_json_object(string $content): ?array
@@ -571,8 +540,8 @@ function js_quiz_validate_generated(array $q): bool
 
 function js_quiz_generate_with_llm(array $state): array
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY missing');
     }
 
     $seed = js_quiz_pick_seed($state);
@@ -614,7 +583,7 @@ function js_quiz_generate_with_llm(array $state): array
             array('role' => 'user', 'content' => $user),
         ),
     );
-    $res = js_quiz_openai_json($payload);
+    $res = js_quiz_llm_json($payload);
     if (!$res['ok']) return $res;
 
     $content = trim((string)($res['body']['choices'][0]['message']['content'] ?? ''));
@@ -1097,6 +1066,17 @@ if (KONVO_API_KEY === '') {
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
 $force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+
+if (!$dryRun && !$allowNewTopics && !$force) {
+    out_json(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+    ));
+}
 
 $state = js_quiz_load_state();
 $today = date('Y-m-d');

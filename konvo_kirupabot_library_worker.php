@@ -10,6 +10,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/kirupa_article_helper.php';
@@ -25,13 +27,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42);
 if (!defined('KONVO_DESIGN_CATEGORY_ID')) define('KONVO_DESIGN_CATEGORY_ID', 114);
@@ -293,8 +294,8 @@ function library_generate_blurb_with_llm(array $article, bool $strict): array
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => 'curl_init unavailable');
     }
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.');
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.');
     }
 
     $botName = 'kirupaBot';
@@ -329,22 +330,12 @@ function library_generate_blurb_with_llm(array $article, bool $strict): array
         'temperature' => 0.8,
     );
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    curl_setopt_array($ch, array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    ));
-
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
+    $__aiRes = konvo_anthropic_chat_json($payload, 60);
+    $status = (int)($__aiRes['status'] ?? 0);
+    $err = ($__aiRes['ok'] ?? false) ? '' : (string)($__aiRes['error'] ?? 'Claude request failed');
+    $raw = ($__aiRes['ok'] ?? false)
+        ? (string)json_encode($__aiRes['body'], JSON_UNESCAPED_SLASHES)
+        : false;
 
     if ($raw === false || $err !== '') {
         return array('ok' => false, 'error' => 'OpenAI network error: ' . $err);
@@ -419,11 +410,24 @@ if ($providedKey === '' || !library_safe_hash_equals(KONVO_SECRET, $providedKey)
 if (KONVO_API_KEY === '') {
     library_out(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
-if (KONVO_OPENAI_API_KEY === '') {
-    library_out(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') {
+    library_out(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 }
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
+$force = isset($_GET['force']) && (string)$_GET['force'] === '1';
+$allowNewTopicsEnv = strtolower(trim((string)getenv('KONVO_ALLOW_NEW_TOPICS')));
+$allowNewTopics = in_array($allowNewTopicsEnv, array('1', 'true', 'yes', 'on'), true);
+
+if (!$dryRun && !$allowNewTopics && !$force) {
+    library_out(200, array(
+        'ok' => true,
+        'posted' => false,
+        'reason' => 'new_topic_creation_disabled',
+        'hint' => 'Set KONVO_ALLOW_NEW_TOPICS=1 or pass force=1 to override.',
+    ));
+}
+
 $links = function_exists('kirupa_fetch_llms_links') ? kirupa_fetch_llms_links() : array();
 if (!is_array($links) || $links === array()) {
     library_out(500, array('ok' => false, 'error' => 'No kirupa.com article links were available.'));

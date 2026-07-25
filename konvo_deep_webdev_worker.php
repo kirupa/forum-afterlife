@@ -10,6 +10,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/kirupa_article_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
@@ -20,14 +22,13 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_API_KEY')) define('KONVO_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_CATEGORY_ID')) define('KONVO_CATEGORY_ID', 42);
 if (!defined('KONVO_WEBDEV_CATEGORY_ID')) define('KONVO_WEBDEV_CATEGORY_ID', 42);
 
@@ -571,142 +572,26 @@ function fetch_json_url($url, $headers)
     return array('ok' => is_array($decoded), 'status' => 200, 'error' => '', 'json' => is_array($decoded) ? $decoded : array());
 }
 
-function deep_openai_chat_json($messages, $temperature = 0.8, $maxTokens = 1200, $task = 'deep_question')
+function deep_llm_chat_json($messages, $temperature = 0.8, $maxTokens = 1200, $task = 'deep_question')
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing.');
-    }
-    if (!function_exists('curl_init')) {
-        return array('ok' => false, 'error' => 'curl_init unavailable.');
-    }
-
-    $payload = array(
+    $started = microtime(true);
+    $res = konvo_anthropic_chat_json(array(
         'model' => konvo_model_for_task((string)$task, array('technical' => true)),
         'messages' => is_array($messages) ? $messages : array(),
         'temperature' => (float)$temperature,
-        'max_completion_tokens' => max(300, (int)$maxTokens),
-    );
+        'max_tokens' => max(300, (int)$maxTokens),
+    ), 60);
 
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
-    $opts = array(
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 45,
-        CURLOPT_CONNECTTIMEOUT => 12,
-        CURLOPT_HTTPHEADER => array(
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . KONVO_OPENAI_API_KEY,
-        ),
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES),
-    );
-    if (defined('CURLOPT_IPRESOLVE') && defined('CURL_IPRESOLVE_V4')) {
-        $opts[CURLOPT_IPRESOLVE] = CURL_IPRESOLVE_V4;
-    }
-    if (defined('CURLOPT_HTTP_VERSION') && defined('CURL_HTTP_VERSION_1_1')) {
-        $opts[CURLOPT_HTTP_VERSION] = CURL_HTTP_VERSION_1_1;
-    }
-    curl_setopt_array($ch, $opts);
-    $raw = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $errno = curl_errno($ch);
-    $err = curl_error($ch);
-    $info = curl_getinfo($ch);
-    curl_close($ch);
+    $status = (int)($res['status'] ?? 0);
+    $meta = array('http_status' => $status, 'total_time' => round(microtime(true) - $started, 3));
 
-    if ($raw === false || $err !== '') {
-        $meta = array(
-            'curl_errno' => (int)$errno,
-            'http_status' => $status,
-            'primary_ip' => isset($info['primary_ip']) ? (string)$info['primary_ip'] : '',
-            'namelookup_time' => isset($info['namelookup_time']) ? (float)$info['namelookup_time'] : 0.0,
-            'connect_time' => isset($info['connect_time']) ? (float)$info['connect_time'] : 0.0,
-            'appconnect_time' => isset($info['appconnect_time']) ? (float)$info['appconnect_time'] : 0.0,
-            'total_time' => isset($info['total_time']) ? (float)$info['total_time'] : 0.0,
-        );
-        return array('ok' => false, 'error' => 'OpenAI request failed: ' . $err, 'status' => $status, 'meta' => $meta);
+    if (!($res['ok'] ?? false)) {
+        return array('ok' => false, 'error' => (string)($res['error'] ?? 'Claude request failed'), 'status' => $status, 'meta' => $meta);
     }
 
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        return array(
-            'ok' => false,
-            'error' => 'OpenAI response was not valid JSON',
-            'status' => $status,
-            'meta' => array(
-                'curl_errno' => (int)$errno,
-                'http_status' => $status,
-                'raw_head' => substr((string)$raw, 0, 260),
-            ),
-        );
-    }
-    if (isset($decoded['error']) && is_array($decoded['error'])) {
-        $apiMsg = trim((string)($decoded['error']['message'] ?? 'OpenAI API returned an error.'));
-        return array(
-            'ok' => false,
-            'error' => 'OpenAI API error: ' . $apiMsg,
-            'status' => $status,
-            'meta' => array(
-                'curl_errno' => (int)$errno,
-                'http_status' => $status,
-                'error_type' => (string)($decoded['error']['type'] ?? ''),
-                'error_code' => (string)($decoded['error']['code'] ?? ''),
-            ),
-        );
-    }
-
-    $content = '';
-    if (isset($decoded['choices'][0]['message']['content'])) {
-        $msgContent = $decoded['choices'][0]['message']['content'];
-        if (is_string($msgContent)) {
-            $content = trim($msgContent);
-        } elseif (is_array($msgContent)) {
-            $parts = array();
-            foreach ($msgContent as $part) {
-                if (is_string($part)) {
-                    $s = trim($part);
-                    if ($s !== '') $parts[] = $s;
-                    continue;
-                }
-                if (!is_array($part)) continue;
-                if (isset($part['text']) && is_string($part['text'])) {
-                    $s = trim((string)$part['text']);
-                    if ($s !== '') $parts[] = $s;
-                    continue;
-                }
-                if (isset($part['text']['value']) && is_string($part['text']['value'])) {
-                    $s = trim((string)$part['text']['value']);
-                    if ($s !== '') $parts[] = $s;
-                    continue;
-                }
-            }
-            $content = trim(implode("\n", $parts));
-        }
-    }
-    if ($content === '' && isset($decoded['output_text']) && is_string($decoded['output_text'])) {
-        $content = trim((string)$decoded['output_text']);
-    }
-    if ($content === '' && isset($decoded['choices'][0]['text']) && is_string($decoded['choices'][0]['text'])) {
-        $content = trim((string)$decoded['choices'][0]['text']);
-    }
+    $content = trim((string)($res['body']['choices'][0]['message']['content'] ?? ''));
     if ($content === '') {
-        $refusal = '';
-        if (isset($decoded['choices'][0]['message']['refusal']) && is_string($decoded['choices'][0]['message']['refusal'])) {
-            $refusal = trim((string)$decoded['choices'][0]['message']['refusal']);
-        }
-        return array(
-            'ok' => false,
-            'error' => $refusal !== '' ? ('OpenAI refusal: ' . $refusal) : 'OpenAI response format error',
-            'status' => $status,
-            'meta' => array(
-                'curl_errno' => (int)$errno,
-                'http_status' => $status,
-                'raw_keys' => implode(',', array_keys($decoded)),
-            ),
-        );
-    }
-
-    if ($content === '') {
-        return array('ok' => false, 'error' => 'OpenAI returned empty content', 'status' => $status, 'meta' => array('curl_errno' => (int)$errno));
+        return array('ok' => false, 'error' => 'Claude returned empty content', 'status' => $status, 'meta' => $meta);
     }
 
     $json = json_decode($content, true);
@@ -719,14 +604,10 @@ function deep_openai_chat_json($messages, $temperature = 0.8, $maxTokens = 1200,
         }
     }
     if (!is_array($json)) {
-        return array('ok' => false, 'error' => 'OpenAI content JSON parse failed', 'status' => $status, 'raw_content' => $content, 'meta' => array('curl_errno' => (int)$errno));
+        return array('ok' => false, 'error' => 'Claude content JSON parse failed', 'status' => $status, 'raw_content' => $content, 'meta' => $meta);
     }
 
-    return array('ok' => true, 'json' => $json, 'status' => $status, 'meta' => array(
-        'curl_errno' => (int)$errno,
-        'http_status' => $status,
-        'total_time' => isset($info['total_time']) ? (float)$info['total_time'] : 0.0,
-    ));
+    return array('ok' => true, 'json' => $json, 'status' => $status, 'meta' => $meta);
 }
 
 function deep_recent_titles_for_prompt($forumRecentTitles, $recentQuestionTitles, $maxItems = 28)
@@ -776,8 +657,8 @@ function deep_bot_question_persona($bot)
 
 function deep_generate_single_live_question($forumRecentTitles, $recentQuestionTitles, $preferCoding = true, $bot = array(), $shapeOverride = '')
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('ok' => false, 'error' => 'OPENAI_API_KEY missing', 'meta' => array());
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('ok' => false, 'error' => 'ANTHROPIC_API_KEY missing', 'meta' => array());
     }
 
     $recent = deep_recent_titles_for_prompt($forumRecentTitles, $recentQuestionTitles, 28);
@@ -883,7 +764,7 @@ function deep_generate_single_live_question($forumRecentTitles, $recentQuestionT
             . "Rejected in prior attempts this run (do not repeat):\n"
             . $attemptBlock;
 
-        $res = deep_openai_chat_json(
+        $res = deep_llm_chat_json(
             array(
                 array('role' => 'system', 'content' => $system),
                 array('role' => 'user', 'content' => $user),
@@ -989,8 +870,8 @@ function deep_sanitize_generated_question($item, $isCoding)
 
 function deep_generate_llm_question_pool($forumRecentTitles, $recentQuestionTitles, $codingCount = 18, $conceptCount = 5)
 {
-    if (KONVO_OPENAI_API_KEY === '') {
-        return array('coding' => array(), 'concept' => array(), 'error' => 'OPENAI_API_KEY missing', 'error_meta' => array());
+    if (KONVO_ANTHROPIC_API_KEY === '') {
+        return array('coding' => array(), 'concept' => array(), 'error' => 'ANTHROPIC_API_KEY missing', 'error_meta' => array());
     }
 
     $recentTitles = array();
@@ -1043,7 +924,7 @@ function deep_generate_llm_question_pool($forumRecentTitles, $recentQuestionTitl
         . "Recent titles to avoid:\n"
         . $recentTitlesBlock;
 
-    $res = deep_openai_chat_json(
+    $res = deep_llm_chat_json(
         array(
             array('role' => 'system', 'content' => $system),
             array('role' => 'user', 'content' => $user),

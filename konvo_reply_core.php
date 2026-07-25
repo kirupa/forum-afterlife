@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/kirupa_article_helper.php';
+require_once __DIR__ . '/konvo_anthropic_client.php';
 
 $konvoModelRouter = __DIR__ . '/konvo_model_router.php';
 if (is_file($konvoModelRouter)) {
@@ -11,7 +12,7 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
@@ -137,7 +138,7 @@ function konvo_emergency_safe_reply_text(string $title, string $targetRaw, strin
 }
 
 function konvo_emergency_safe_reply_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $knownFactsLine,
@@ -145,12 +146,12 @@ function konvo_emergency_safe_reply_with_llm(
     string $targetRaw,
     string $opRaw
 ): string {
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return '';
     }
     $model = trim($modelName);
     if ($model === '') {
-        $model = 'gpt-5.4-mini';
+        $model = 'claude-haiku-4-5';
     }
     $payload = [
         'model' => $model,
@@ -174,10 +175,10 @@ function konvo_emergency_safe_reply_with_llm(
         'temperature' => 0.5,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -195,6 +196,10 @@ function konvo_emergency_safe_reply_with_llm(
 
 function konvo_call_api(string $url, array $headers, ?array $payload = null, string $method = ''): array
 {
+    // LLM traffic goes to Claude; Discourse traffic falls through untouched.
+    if ($url === 'llm:chat' && is_array($payload)) {
+        return konvo_anthropic_chat_json($payload, 60);
+    }
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'status' => 0, 'error' => 'curl_init unavailable'];
     }
@@ -507,7 +512,7 @@ function konvo_uncertainty_phrase_for_bot(string $botSlug): string
 function konvo_low_effort_reaction_for_bot(
     string $botSlug,
     string $seed = '',
-    string $openAiApiKey = '',
+    string $anthropicApiKey = '',
     string $topicTitle = '',
     string $targetRaw = '',
     string $targetUsername = ''
@@ -536,11 +541,11 @@ function konvo_low_effort_reaction_for_bot(
         $targetRaw = trim((string)substr($targetRaw, 0, 260)) . '…';
     }
 
-    if ($openAiApiKey !== '') {
+    if ($anthropicApiKey !== '') {
         $model = function_exists('konvo_model_for_task')
             ? (string)konvo_model_for_task('low_effort_reaction', ['technical' => false])
-            : 'gpt-5.4-mini';
-        if ($model === '') $model = 'gpt-5.4-mini';
+            : 'claude-haiku-4-5';
+        if ($model === '') $model = 'claude-haiku-4-5';
         $payload = [
             'model' => $model,
             'messages' => [
@@ -564,10 +569,10 @@ function konvo_low_effort_reaction_for_bot(
             'max_tokens' => 16,
         ];
         $res = konvo_call_api(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             [
                 'Content-Type: application/json',
-                'Authorization: Bearer ' . $openAiApiKey,
+                'Authorization: Bearer ' . $anthropicApiKey,
             ],
             $payload
         );
@@ -1269,13 +1274,13 @@ function konvo_is_generic_kirupa_resource_url(string $url, string $title = ''): 
 }
 
 function konvo_kirupabot_generate_keywords_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $contextText
 ): array
 {
-    if (trim($openAiApiKey) === '') {
+    if (trim($anthropicApiKey) === '') {
         return [];
     }
     $topicTitle = trim((string)$topicTitle);
@@ -1284,7 +1289,7 @@ function konvo_kirupabot_generate_keywords_with_llm(
         return [];
     }
     $payload = [
-        'model' => $modelName !== '' ? $modelName : 'gpt-5.4-mini',
+        'model' => $modelName !== '' ? $modelName : 'claude-haiku-4-5',
         'messages' => [
             [
                 'role' => 'system',
@@ -1300,10 +1305,10 @@ function konvo_kirupabot_generate_keywords_with_llm(
         'temperature' => 0.2,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -1395,14 +1400,14 @@ function konvo_kirupabot_fallback_common_themes_from_keywords(array $keywords): 
 }
 
 function konvo_kirupabot_generate_common_themes_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $contextText,
     array $keywords
 ): array {
     $fallback = konvo_kirupabot_fallback_common_themes_from_keywords($keywords);
-    if (trim($openAiApiKey) === '') {
+    if (trim($anthropicApiKey) === '') {
         return $fallback;
     }
     $topicTitle = trim((string)$topicTitle);
@@ -1421,7 +1426,7 @@ function konvo_kirupabot_generate_common_themes_with_llm(
         return $fallback;
     }
     $payload = [
-        'model' => $modelName !== '' ? $modelName : 'gpt-5.4-mini',
+        'model' => $modelName !== '' ? $modelName : 'claude-haiku-4-5',
         'messages' => [
             [
                 'role' => 'system',
@@ -1439,10 +1444,10 @@ function konvo_kirupabot_generate_common_themes_with_llm(
         'temperature' => 0.1,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -1621,14 +1626,14 @@ function konvo_kirupabot_article_is_on_topic(array $candidate, array $focusKeywo
 }
 
 function konvo_kirupabot_filter_resources_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $contextText,
     array $candidates,
     int $limit = 3
 ): array {
-    if (trim($openAiApiKey) === '' || $candidates === []) {
+    if (trim($anthropicApiKey) === '' || $candidates === []) {
         return $candidates;
     }
     $rows = [];
@@ -1658,7 +1663,7 @@ function konvo_kirupabot_filter_resources_with_llm(
         $listLines[] = $row['idx'] . ') ' . $row['title'] . ' | ' . $row['url'];
     }
     $payload = [
-        'model' => $modelName !== '' ? $modelName : 'gpt-5.4-mini',
+        'model' => $modelName !== '' ? $modelName : 'claude-haiku-4-5',
         'messages' => [
             [
                 'role' => 'system',
@@ -1675,10 +1680,10 @@ function konvo_kirupabot_filter_resources_with_llm(
         'temperature' => 0.1,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -2514,7 +2519,7 @@ function konvo_topic_has_op_thank_you(array $topic, string $opUsername, int $can
 }
 
 function konvo_generate_op_thank_you_text(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $candidateUsername,
@@ -2522,7 +2527,7 @@ function konvo_generate_op_thank_you_text(
     string $signature,
     string $soulPrompt
 ): string {
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return '';
     }
     $payload = [
@@ -2547,10 +2552,10 @@ function konvo_generate_op_thank_you_text(
         'temperature' => 0.5,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -2570,7 +2575,7 @@ function konvo_generate_op_thank_you_text(
 }
 
 function konvo_generate_direct_thanks_ack_text(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $targetUsername,
@@ -2578,7 +2583,7 @@ function konvo_generate_direct_thanks_ack_text(
     string $signature,
     string $soulPrompt
 ): string {
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return '';
     }
     $payload = [
@@ -2604,10 +2609,10 @@ function konvo_generate_direct_thanks_ack_text(
         'temperature' => 0.7,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -2647,7 +2652,7 @@ function konvo_generate_direct_thanks_ack_text(
 function konvo_try_post_op_thank_you(
     string $baseUrl,
     string $discourseApiKey,
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     int $topicId,
     array $topic,
@@ -2715,7 +2720,7 @@ function konvo_try_post_op_thank_you(
     $topicTitle = (string)($topic['title'] ?? 'Untitled topic');
 
     $thankYou = konvo_generate_op_thank_you_text(
-        $openAiApiKey,
+        $anthropicApiKey,
         $modelName,
         $topicTitle,
         $candidateUsername,
@@ -2923,7 +2928,7 @@ function konvo_has_technical_framework_shape(string $text): bool
 }
 
 function konvo_rewrite_technical_framework_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -2932,7 +2937,7 @@ function konvo_rewrite_technical_framework_with_llm(
     string $draft
 ): string {
     $draft = trim((string)$draft);
-    if ($draft === '' || trim($openAiApiKey) === '') {
+    if ($draft === '' || trim($anthropicApiKey) === '') {
         return '';
     }
 
@@ -2958,10 +2963,10 @@ function konvo_rewrite_technical_framework_with_llm(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -3523,7 +3528,7 @@ function konvo_strip_code_blocks_for_nontechnical(string $text): string
 }
 
 function konvo_repair_code_block_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -3532,7 +3537,7 @@ function konvo_repair_code_block_with_llm(
     string $draft
 ): string {
     $draft = trim((string)$draft);
-    if ($draft === '' || $openAiApiKey === '') {
+    if ($draft === '' || $anthropicApiKey === '') {
         return '';
     }
     if (strpos($draft, '```') !== false) {
@@ -3558,10 +3563,10 @@ function konvo_repair_code_block_with_llm(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -4628,7 +4633,7 @@ function konvo_apply_micro_grammar_fixes(string $text): string
 }
 
 function konvo_grammar_cleanup_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -4638,7 +4643,7 @@ function konvo_grammar_cleanup_with_llm(
     bool $isTechnicalQuestion
 ): string {
     $draft = trim($draft);
-    if ($draft === '' || $openAiApiKey === '' || $modelName === '') {
+    if ($draft === '' || $anthropicApiKey === '' || $modelName === '') {
         return $draft;
     }
 
@@ -4668,10 +4673,10 @@ function konvo_grammar_cleanup_with_llm(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -5291,7 +5296,7 @@ function konvo_force_no_questions(string $text): string
 }
 
 function konvo_force_genuine_question_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $topicTitle,
@@ -5299,7 +5304,7 @@ function konvo_force_genuine_question_with_llm(
     string $draft
 ): string {
     $draft = trim((string)$draft);
-    if ($openAiApiKey === '' || $draft === '') {
+    if ($anthropicApiKey === '' || $draft === '') {
         return $draft;
     }
     $payload = [
@@ -5321,10 +5326,10 @@ function konvo_force_genuine_question_with_llm(
         'temperature' => 0.5,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7055,7 +7060,7 @@ function konvo_clean_poll_reason(string $text): string
 }
 
 function konvo_pick_poll_option_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $botSlug,
@@ -7067,8 +7072,8 @@ function konvo_pick_poll_option_with_llm(
     if (!is_array($options) || $options === []) {
         return ['ok' => false, 'error' => 'No poll options available.'];
     }
-    if ($openAiApiKey === '') {
-        return ['ok' => false, 'error' => 'OPENAI_API_KEY missing.'];
+    if ($anthropicApiKey === '') {
+        return ['ok' => false, 'error' => 'ANTHROPIC_API_KEY missing.'];
     }
 
     $list = [];
@@ -7110,10 +7115,10 @@ function konvo_pick_poll_option_with_llm(
         'temperature' => 0.3,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7281,7 +7286,7 @@ function konvo_thread_highest_similarity_hit(string $replyText, array $posts, st
 }
 
 function konvo_full_thread_uniqueness_pass_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $targetRaw,
@@ -7339,7 +7344,7 @@ function konvo_full_thread_uniqueness_pass_with_llm(
         return $fallback;
     }
 
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return $fallback;
     }
 
@@ -7381,10 +7386,10 @@ function konvo_full_thread_uniqueness_pass_with_llm(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7434,7 +7439,7 @@ function konvo_full_thread_uniqueness_pass_with_llm(
 }
 
 function konvo_thread_reply_pass_with_llm(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $targetUsername,
@@ -7456,7 +7461,7 @@ function konvo_thread_reply_pass_with_llm(
         'reason' => 'thread_pass_unavailable',
         'guidance' => '',
     ];
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return $fallback;
     }
 
@@ -7491,10 +7496,10 @@ function konvo_thread_reply_pass_with_llm(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7529,7 +7534,7 @@ function konvo_thread_reply_pass_with_llm(
 }
 
 function konvo_quality_gate_evaluate_reply(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $topicTitle,
     string $targetRaw,
@@ -7539,8 +7544,8 @@ function konvo_quality_gate_evaluate_reply(
     bool $isQuestionLike,
     bool $requiresFollowThrough
 ): array {
-    if ($openAiApiKey === '') {
-        return ['ok' => false, 'error' => 'OPENAI_API_KEY missing'];
+    if ($anthropicApiKey === '') {
+        return ['ok' => false, 'error' => 'ANTHROPIC_API_KEY missing'];
     }
     $modeRule = 'General mode: keep it concise, human, and directly relevant.';
     if ($isSimpleClarification) {
@@ -7590,10 +7595,10 @@ function konvo_quality_gate_evaluate_reply(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7636,7 +7641,7 @@ function konvo_quality_gate_evaluate_reply(
 }
 
 function konvo_quality_gate_rewrite_reply(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -7648,7 +7653,7 @@ function konvo_quality_gate_rewrite_reply(
     bool $isTechnicalQuestion,
     bool $isSimpleClarification
 ): string {
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return '';
     }
     $issueText = $issues !== [] ? implode(', ', $issues) : 'general_quality';
@@ -7691,10 +7696,10 @@ function konvo_quality_gate_rewrite_reply(
     ];
 
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7705,7 +7710,7 @@ function konvo_quality_gate_rewrite_reply(
 }
 
 function konvo_quality_gate_hard_rewrite_reply(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -7713,7 +7718,7 @@ function konvo_quality_gate_hard_rewrite_reply(
     string $targetRaw,
     string $draft
 ): string {
-    if ($openAiApiKey === '') {
+    if ($anthropicApiKey === '') {
         return '';
     }
     $payload = [
@@ -7741,10 +7746,10 @@ function konvo_quality_gate_hard_rewrite_reply(
         'temperature' => 0.35,
     ];
     $res = konvo_call_api(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         [
             'Content-Type: application/json',
-            'Authorization: Bearer ' . $openAiApiKey,
+            'Authorization: Bearer ' . $anthropicApiKey,
         ],
         $payload
     );
@@ -7772,7 +7777,7 @@ function konvo_quality_gate_forced_human_candidate(string $signature, int $seed 
 }
 
 function konvo_enforce_reply_quality_gate(
-    string $openAiApiKey,
+    string $anthropicApiKey,
     string $modelName,
     string $soulPrompt,
     string $signature,
@@ -7805,7 +7810,7 @@ function konvo_enforce_reply_quality_gate(
 
     for ($round = 1; ; $round++) {
         $eval = konvo_quality_gate_evaluate_reply(
-            $openAiApiKey,
+            $anthropicApiKey,
             $evalModel !== '' ? $evalModel : $modelName,
             $topicTitle,
             $targetRaw,
@@ -7860,7 +7865,7 @@ function konvo_enforce_reply_quality_gate(
 
         if ($phase === 'normal' && $round >= $maxRounds) {
             $hard = konvo_quality_gate_hard_rewrite_reply(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $hardModel !== '' ? $hardModel : $modelName,
                 $soulPrompt,
                 $signature,
@@ -7886,7 +7891,7 @@ function konvo_enforce_reply_quality_gate(
         if ($phase === 'hard') {
             $hardRounds++;
             $rewritten = konvo_quality_gate_hard_rewrite_reply(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $hardModel !== '' ? $hardModel : $modelName,
                 $soulPrompt,
                 $signature,
@@ -7896,7 +7901,7 @@ function konvo_enforce_reply_quality_gate(
             );
         } else {
             $rewritten = konvo_quality_gate_rewrite_reply(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $rewriteModel !== '' ? $rewriteModel : $modelName,
                 $soulPrompt,
                 $signature,
@@ -7921,7 +7926,7 @@ function konvo_enforce_reply_quality_gate(
 
     if ($score < $threshold && $isTechnicalQuestion && $rescueModel !== '' && $rescueModel !== $hardModel) {
         $rescue = konvo_quality_gate_hard_rewrite_reply(
-            $openAiApiKey,
+            $anthropicApiKey,
             $rescueModel,
             $soulPrompt,
             $signature,
@@ -7936,7 +7941,7 @@ function konvo_enforce_reply_quality_gate(
             $current = konvo_normalize_code_fence_spacing($current);
             $current = konvo_normalize_signature($current, $signature);
             $eval = konvo_quality_gate_evaluate_reply(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $evalModel !== '' ? $evalModel : $modelName,
                 $topicTitle,
                 $targetRaw,
@@ -7985,7 +7990,7 @@ function konvo_enforce_reply_quality_gate(
         for ($i = 0; $i < $forcedCandidateTries; $i++) {
             $candidate = konvo_quality_gate_forced_human_candidate($signature, $i + count($history));
             $eval = konvo_quality_gate_evaluate_reply(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $evalModel !== '' ? $evalModel : $modelName,
                 $topicTitle,
                 $targetRaw,
@@ -8095,12 +8100,12 @@ function konvo_run_reply(array $cfg): void
 
     $baseUrl = trim((string)(getenv('DISCOURSE_BASE_URL') ?: 'https://forum.kirupa.com'));
     $discourseApiKey = trim((string)getenv('DISCOURSE_API_KEY'));
-    $openAiApiKey = trim((string)getenv('OPENAI_API_KEY'));
+    $anthropicApiKey = trim((string)getenv('ANTHROPIC_API_KEY'));
     if ($discourseApiKey === '') {
         konvo_json_out(['ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'], 500);
     }
-    if ($openAiApiKey === '') {
-        konvo_json_out(['ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'], 500);
+    if ($anthropicApiKey === '') {
+        konvo_json_out(['ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'], 500);
     }
 
     $botUsername = (string)$cfg['bot_username'];
@@ -8177,8 +8182,8 @@ function konvo_run_reply(array $cfg): void
             konvo_load_soul((string)$cfg['soul_key'], (string)$cfg['soul_fallback'])
         );
         $safeReplyText = konvo_emergency_safe_reply_with_llm(
-            $openAiApiKey,
-            $safeModel !== '' ? $safeModel : 'gpt-5.4-mini',
+            $anthropicApiKey,
+            $safeModel !== '' ? $safeModel : 'claude-haiku-4-5',
             $safeSoulPrompt,
             $personaFactsLine,
             $title,
@@ -8423,7 +8428,7 @@ function konvo_run_reply(array $cfg): void
         $keywordContext = trim(implode("\n\n", $keywordContextParts));
         $keywordModel = konvo_model_for_task('reply_ack', ['technical' => true]);
         $kirupaBotLlmResourceKeywords = konvo_kirupabot_generate_keywords_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $keywordModel,
             $title,
             $keywordContext
@@ -8440,7 +8445,7 @@ function konvo_run_reply(array $cfg): void
         }
         $kirupaBotRetrievalDebug['keywords'] = $kirupaBotLlmResourceKeywords;
         $kirupaBotCommonThemes = konvo_kirupabot_generate_common_themes_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $keywordModel,
             $title,
             $keywordContext,
@@ -8462,7 +8467,7 @@ function konvo_run_reply(array $cfg): void
             $preFilterResourceArticles = $kirupaBotResourceArticles;
             $filterContext = trim($keywordContext . "\n\nTarget excerpt:\n" . $resourceTargetRaw);
             $kirupaBotResourceArticles = konvo_kirupabot_filter_resources_with_llm(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $keywordModel,
                 $title,
                 $filterContext,
@@ -8820,7 +8825,7 @@ function konvo_run_reply(array $cfg): void
         $pollVoteMeta['poll_status'] = (string)($pollContext['status'] ?? '');
 
         $pick = konvo_pick_poll_option_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $pollModelName,
             $soulPrompt,
             $botSlug,
@@ -8956,7 +8961,7 @@ function konvo_run_reply(array $cfg): void
     $replyText = konvo_sanitize_output_security($approvedReply);
     if ($replyText === '' && $thanksAckMode) {
         $ackDraft = konvo_generate_direct_thanks_ack_text(
-            $openAiApiKey,
+            $anthropicApiKey,
             $ackModelName,
             $title,
             $lastUsername,
@@ -9091,10 +9096,10 @@ function konvo_run_reply(array $cfg): void
         ];
 
         $aiRes = konvo_call_api(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             [
                 'Content-Type: application/json',
-                'Authorization: Bearer ' . $openAiApiKey,
+                'Authorization: Bearer ' . $anthropicApiKey,
             ],
             $openAiPayload
         );
@@ -9195,10 +9200,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $strictRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $strictPayload
             );
@@ -9223,10 +9228,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $novelRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $novelPayload
             );
@@ -9269,10 +9274,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $crossNovelRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $crossNovelPayload
             );
@@ -9317,10 +9322,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $selfNovelRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $selfNovelPayload
             );
@@ -9359,10 +9364,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $lastChanceRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $lastChancePayload
             );
@@ -9408,10 +9413,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $saturationRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $saturationPayload
             );
@@ -9458,10 +9463,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $parrotRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $parrotPayload
             );
@@ -9504,10 +9509,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $continuityRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $continuityPayload
             );
@@ -9558,10 +9563,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $snippetRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $snippetPayload
             );
@@ -9595,10 +9600,10 @@ function konvo_run_reply(array $cfg): void
                 'temperature' => (float)$cfg['strict_temperature'],
             ];
             $memeRes = konvo_call_api(
-                'https://api.openai.com/v1/chat/completions',
+                'llm:chat',
                 [
                     'Content-Type: application/json',
-                    'Authorization: Bearer ' . $openAiApiKey,
+                    'Authorization: Bearer ' . $anthropicApiKey,
                 ],
                 $memePayload
             );
@@ -9647,10 +9652,10 @@ function konvo_run_reply(array $cfg): void
             'temperature' => 0.25,
         ];
         $curatorRes = konvo_call_api(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             [
                 'Content-Type: application/json',
-                'Authorization: Bearer ' . $openAiApiKey,
+                'Authorization: Bearer ' . $anthropicApiKey,
             ],
             $curatorPayload
         );
@@ -9681,10 +9686,10 @@ function konvo_run_reply(array $cfg): void
                         'temperature' => 0.2,
                     ];
                     $curatorFixRes = konvo_call_api(
-                        'https://api.openai.com/v1/chat/completions',
+                        'llm:chat',
                         [
                             'Content-Type: application/json',
-                            'Authorization: Bearer ' . $openAiApiKey,
+                            'Authorization: Bearer ' . $anthropicApiKey,
                         ],
                         $curatorFixPayload
                     );
@@ -9703,7 +9708,7 @@ function konvo_run_reply(array $cfg): void
 
     if ($isTechnicalQuestion && !$isSimpleClarification && !$kirupaBotCuratorMode && !konvo_has_technical_framework_shape($replyText)) {
         $rewrittenTechnical = konvo_rewrite_technical_framework_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $modelName,
             $soulPrompt,
             $signature,
@@ -9731,7 +9736,7 @@ function konvo_run_reply(array $cfg): void
         $replyText = konvo_force_fenced_code_from_inline($replyText);
         if (strpos($replyText, '```') === false) {
             $repaired = konvo_repair_code_block_with_llm(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $modelName,
                 $soulPrompt,
                 $signature,
@@ -9748,7 +9753,7 @@ function konvo_run_reply(array $cfg): void
         $replyText = konvo_force_fenced_code_from_inline($replyText);
         if (strpos($replyText, '```') === false) {
             $repaired = konvo_repair_code_block_with_llm(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $modelName,
                 $soulPrompt,
                 $signature,
@@ -9872,10 +9877,10 @@ function konvo_run_reply(array $cfg): void
             'temperature' => (float)$cfg['strict_temperature'],
         ];
         $followThroughRes = konvo_call_api(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             [
                 'Content-Type: application/json',
-                'Authorization: Bearer ' . $openAiApiKey,
+                'Authorization: Bearer ' . $anthropicApiKey,
             ],
             $followThroughPayload
         );
@@ -9908,10 +9913,10 @@ function konvo_run_reply(array $cfg): void
             'temperature' => (float)$cfg['strict_temperature'],
         ];
         $selfRefRes = konvo_call_api(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             [
                 'Content-Type: application/json',
-                'Authorization: Bearer ' . $openAiApiKey,
+                'Authorization: Bearer ' . $anthropicApiKey,
             ],
             $selfRefPayload
         );
@@ -9939,7 +9944,7 @@ function konvo_run_reply(array $cfg): void
     $bypassQualityGateForLowEffortCadence = $forceLowEffortCadence;
     if ($approvedReply === '' && !$bypassQualityGateForLearnerThanks && !$bypassQualityGateForThanksAck && !$bypassQualityGateForKirupaCurator && !$bypassQualityGateForLowEffortCadence && !$manualEditMode) {
         $qualityGate = konvo_enforce_reply_quality_gate(
-            $openAiApiKey,
+            $anthropicApiKey,
             $modelName,
             $soulPrompt,
             $signature,
@@ -10174,7 +10179,7 @@ function konvo_run_reply(array $cfg): void
         }
         $replyText = konvo_apply_micro_grammar_fixes($replyText);
         $replyText = konvo_grammar_cleanup_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $grammarModel,
             $soulPrompt,
             $signature,
@@ -10212,7 +10217,7 @@ function konvo_run_reply(array $cfg): void
     if ($forceQuestionCadence && !$manualEditMode && !$thanksAckMode) {
         if (!konvo_has_genuine_question($replyText)) {
             $replyText = konvo_force_genuine_question_with_llm(
-                $openAiApiKey,
+                $anthropicApiKey,
                 $modelName,
                 $soulPrompt,
                 $title,
@@ -10244,7 +10249,7 @@ function konvo_run_reply(array $cfg): void
             $replyText = konvo_low_effort_reaction_for_bot(
                 $botSlug,
                 $title . '|' . $lastPostNumber . '|' . $lastUsername,
-                $openAiApiKey,
+                $anthropicApiKey,
                 $title,
                 $lastRaw,
                 $lastUsername
@@ -10263,7 +10268,7 @@ function konvo_run_reply(array $cfg): void
                 : konvo_low_effort_reaction_for_bot(
                     $botSlug,
                     $title . '|nontech-code-strip|' . $lastPostNumber,
-                    $openAiApiKey,
+                    $anthropicApiKey,
                     $title,
                     $lastRaw,
                     $lastUsername
@@ -10370,7 +10375,7 @@ function konvo_run_reply(array $cfg): void
     if ($targetAuthorIsBot && !$manualEditMode && !$thanksAckMode) {
         $threadPassModel = konvo_model_for_task('quality_eval', ['technical' => $isTechnicalQuestion]);
         $threadReplyPass = konvo_thread_reply_pass_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $threadPassModel !== '' ? $threadPassModel : $modelName,
             $title,
             $lastUsername,
@@ -10417,7 +10422,7 @@ function konvo_run_reply(array $cfg): void
     if (!$manualEditMode && !$thanksAckMode) {
         $uniqModel = konvo_model_for_task('quality_eval', ['technical' => $isTechnicalQuestion]);
         $fullThreadUniquenessPass = konvo_full_thread_uniqueness_pass_with_llm(
-            $openAiApiKey,
+            $anthropicApiKey,
             $uniqModel !== '' ? $uniqModel : $modelName,
             $title,
             $lastRaw,
@@ -10665,7 +10670,7 @@ function konvo_run_reply(array $cfg): void
         $opThankYouMeta = konvo_try_post_op_thank_you(
             $baseUrl,
             $discourseApiKey,
-            $openAiApiKey,
+            $anthropicApiKey,
             $modelName,
             $topicId,
             $freshTopicRes['body'],

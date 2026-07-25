@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/konvo_anthropic_client.php';
+
 header('Content-Type: application/json; charset=utf-8');
 
 $konvoModelRouter = __DIR__ . '/konvo_model_router.php';
@@ -11,13 +13,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_DISCOURSE_API_KEY')) define('KONVO_DISCOURSE_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 
 function out_json(int $status, array $data): void
@@ -84,6 +85,10 @@ function fetch_json(string $url, array $headers = array()): ?array
 
 function post_json(string $url, array $payload, array $headers = array()): array
 {
+    // LLM traffic goes to Claude; Discourse traffic falls through untouched.
+    if ($url === 'llm:chat') {
+        return konvo_anthropic_chat_json($payload, 60);
+    }
     if (!function_exists('curl_init')) return array('ok' => false, 'status' => 0, 'error' => 'curl unavailable', 'body' => array(), 'raw' => '');
     $ch = curl_init($url);
     $baseHeaders = array('Content-Type: application/json', 'Accept: application/json');
@@ -166,8 +171,8 @@ function pick_consensus_target(array $state): ?array
 
 function generate_consensus_reply(string $topicTitle, string $opRaw, string $threadContext): array
 {
-    if (KONVO_OPENAI_API_KEY === '' || !function_exists('curl_init')) {
-        return array('ok' => false, 'error' => 'openai unavailable');
+    if (KONVO_ANTHROPIC_API_KEY === '' || !function_exists('curl_init')) {
+        return array('ok' => false, 'error' => 'claude unavailable');
     }
 
     $system = 'You are writing one final consensus-style forum reply in a casual AI/tech discussion thread. '
@@ -178,7 +183,7 @@ function generate_consensus_reply(string $topicTitle, string $opRaw, string $thr
     $user = "Topic title:\n{$topicTitle}\n\nOriginal post:\n{$opRaw}\n\nThread replies:\n{$threadContext}\n\nWrite the consensus reply now.";
 
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         array(
             'model' => konvo_model_for_task('reply_summary', array('technical' => false)),
             'messages' => array(
@@ -187,7 +192,7 @@ function generate_consensus_reply(string $topicTitle, string $opRaw, string $thr
             ),
             'temperature' => 0.55,
         ),
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
 
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
@@ -209,7 +214,7 @@ $key = isset($_GET['key']) ? (string)$_GET['key'] : '';
 if (KONVO_SECRET === '') out_json(500, array('ok' => false, 'error' => 'DISCOURSE_WEBHOOK_SECRET is not configured on the server.'));
 if ($key === '' || !safe_hash_equals(KONVO_SECRET, $key)) out_json(403, array('ok' => false, 'error' => 'Forbidden', 'hint' => 'Use ?key=YOUR_SECRET'));
 if (KONVO_DISCOURSE_API_KEY === '') out_json(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
-if (KONVO_OPENAI_API_KEY === '') out_json(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') out_json(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 
 $dryRun = isset($_GET['dry_run']) && (string)$_GET['dry_run'] === '1';
 $state = consensus_load();

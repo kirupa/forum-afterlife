@@ -15,6 +15,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/konvo_soul_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
 require_once __DIR__ . '/kirupa_article_helper.php';
+require_once __DIR__ . '/konvo_anthropic_client.php';
 $konvoForumPromptHelper = __DIR__ . '/konvo_forum_prompt_helper.php';
 if (is_file($konvoForumPromptHelper)) {
     require_once $konvoForumPromptHelper;
@@ -26,13 +27,12 @@ if (is_file($konvoModelRouter)) {
 if (!function_exists('konvo_model_for_task')) {
     function konvo_model_for_task(string $task, array $ctx = array()): string
     {
-        return 'gpt-5.4';
+        return 'claude-opus-5';
     }
 }
 
 if (!defined('KONVO_BASE_URL')) define('KONVO_BASE_URL', 'https://forum.kirupa.com');
 if (!defined('KONVO_DISCOURSE_API_KEY')) define('KONVO_DISCOURSE_API_KEY', trim((string)getenv('DISCOURSE_API_KEY')));
-if (!defined('KONVO_OPENAI_API_KEY')) define('KONVO_OPENAI_API_KEY', trim((string)getenv('OPENAI_API_KEY')));
 if (!defined('KONVO_SECRET')) define('KONVO_SECRET', trim((string)getenv('DISCOURSE_WEBHOOK_SECRET')));
 
 function worker_model_for_task($task, $ctx = array())
@@ -484,6 +484,10 @@ function fetch_json($url, $headers = array())
 
 function post_json($url, $payload, $headers = array())
 {
+    // LLM traffic goes to Claude; Discourse traffic falls through untouched.
+    if ((string)$url === 'llm:chat' && is_array($payload)) {
+        return konvo_anthropic_chat_json($payload, 60);
+    }
     if (!function_exists('curl_init')) return array('ok' => false, 'status' => 0, 'error' => 'curl unavailable', 'body' => array(), 'raw' => '');
     $ch = curl_init($url);
     $baseHeaders = array('Content-Type: application/json', 'Accept: application/json');
@@ -566,9 +570,9 @@ function worker_quality_gate_evaluate_reply($topicTitle, $targetRaw, $draft, $is
     );
 
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
         return array('ok' => false, 'error' => 'quality_eval_failed');
@@ -642,9 +646,9 @@ function worker_quality_gate_rewrite_reply($bot, $topicTitle, $targetRaw, $draft
         'temperature' => 0.45,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
         return '';
@@ -683,9 +687,9 @@ function worker_quality_gate_hard_rewrite_reply($bot, $topicTitle, $targetRaw, $
         'temperature' => 0.35,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
         return '';
@@ -1165,7 +1169,7 @@ function worker_topic_has_op_thank_you($topicDetail, $opUsername, $candidatePost
 
 function worker_generate_op_thank_you_text($topicTitle, $candidateUsername, $candidateRaw, $signature, $soulPrompt)
 {
-    if (KONVO_OPENAI_API_KEY === '') return '';
+    if (KONVO_ANTHROPIC_API_KEY === '') return '';
     $payload = array(
         'model' => worker_model_for_task('reply_ack'),
         'messages' => array(
@@ -1188,9 +1192,9 @@ function worker_generate_op_thank_you_text($topicTitle, $candidateUsername, $can
         'temperature' => 0.5,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -1571,7 +1575,7 @@ function worker_apply_micro_grammar_fixes($text)
 function worker_grammar_cleanup_with_llm($soul, $signature, $topicTitle, $targetRaw, $draft, $isTechnicalQuestion)
 {
     $draft = trim((string)$draft);
-    if ($draft === '' || KONVO_OPENAI_API_KEY === '') return $draft;
+    if ($draft === '' || KONVO_ANTHROPIC_API_KEY === '') return $draft;
     $model = worker_model_for_task('reply_rewrite', array('technical' => (bool)$isTechnicalQuestion));
     if (!is_string($model) || trim($model) === '') return $draft;
 
@@ -1600,9 +1604,9 @@ function worker_grammar_cleanup_with_llm($soul, $signature, $topicTitle, $target
         'temperature' => 0.15,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return $draft;
     $clean = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -1947,7 +1951,7 @@ function worker_has_unfenced_multiline_code_candidate($text)
 function worker_repair_code_block_with_llm($bot, $topicTitle, $opRaw, $draft, $signature)
 {
     $draft = trim((string)$draft);
-    if ($draft === '' || strpos((string)$draft, '```') !== false || KONVO_OPENAI_API_KEY === '') {
+    if ($draft === '' || strpos((string)$draft, '```') !== false || KONVO_ANTHROPIC_API_KEY === '') {
         return '';
     }
     $soulKey = isset($bot['soul_key']) ? (string)$bot['soul_key'] : '';
@@ -1972,9 +1976,9 @@ function worker_repair_code_block_with_llm($bot, $topicTitle, $opRaw, $draft, $s
         'temperature' => 0.25,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -3922,7 +3926,7 @@ function worker_enforce_banned_phrase_cleanup($text)
 function worker_force_genuine_question_with_llm($bot, $topicTitle, $targetRaw, $draft)
 {
     $draft = trim((string)$draft);
-    if ($draft === '' || KONVO_OPENAI_API_KEY === '') return $draft;
+    if ($draft === '' || KONVO_ANTHROPIC_API_KEY === '') return $draft;
     $signature = isset($bot['signature']) ? (string)$bot['signature'] : 'Bot';
     $soulKey = isset($bot['soul_key']) ? (string)$bot['soul_key'] : strtolower(trim((string)$signature));
     $soul = konvo_compose_forum_persona_system_prompt(
@@ -3947,9 +3951,9 @@ function worker_force_genuine_question_with_llm($bot, $topicTitle, $targetRaw, $
         'temperature' => 0.5,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return $draft;
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -3970,7 +3974,7 @@ function worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $targetRaw, 
     $isTechnical = is_codey_topic((string)$topicTitle, (string)$targetRaw)
         || (function_exists('kirupa_is_technical_text') && kirupa_is_technical_text((string)$topicTitle . "\n" . (string)$targetRaw));
     $model = worker_model_for_task($isTechnical ? 'reply_generation_technical' : 'reply_generation', array('technical' => $isTechnical));
-    if (!is_string($model) || trim($model) === '' || KONVO_OPENAI_API_KEY === '') return '';
+    if (!is_string($model) || trim($model) === '' || KONVO_ANTHROPIC_API_KEY === '') return '';
 
     $system = trim((string)$soul)
         . ' Rewrite this draft so it replies to the target post without mimicking its opening phrase.'
@@ -3980,7 +3984,7 @@ function worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $targetRaw, 
         . ' No greeting, no sign-off, no bullets.';
     $user = "Topic title: {$topicTitle}\n\nTarget post:\n{$targetRaw}\n\nRecent thread context:\n{$recentContext}\n\nCurrent draft:\n{$draft}\n\nRewrite now.";
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         array(
             'model' => $model,
             'messages' => array(
@@ -3989,7 +3993,7 @@ function worker_rewrite_non_mimic_reply_with_llm($bot, $topicTitle, $targetRaw, 
             ),
             'temperature' => 0.9,
         ),
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -4148,9 +4152,9 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
         'temperature' => 0.7,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
         return array('ok' => false, 'error' => 'OpenAI request failed for quiz verdict.');
@@ -4508,7 +4512,7 @@ function worker_has_technical_framework_shape($text)
 function worker_rewrite_technical_framework_with_llm($bot, $topicTitle, $opRaw, $draft, $signature)
 {
     $draft = trim((string)$draft);
-    if ($draft === '' || KONVO_OPENAI_API_KEY === '') return '';
+    if ($draft === '' || KONVO_ANTHROPIC_API_KEY === '') return '';
     $soulKey = isset($bot['soul_key']) ? (string)$bot['soul_key'] : '';
     $soul = konvo_compose_forum_persona_system_prompt(
         konvo_load_soul($soulKey, 'Write concise, natural forum replies.')
@@ -4535,9 +4539,9 @@ function worker_rewrite_technical_framework_with_llm($bot, $topicTitle, $opRaw, 
         'temperature' => 0.2,
     );
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
     return trim((string)$res['body']['choices'][0]['message']['content']);
@@ -4577,7 +4581,7 @@ function worker_pick_poll_option_and_reason($bot, $topicTitle, $targetRaw, $poll
         . "Options:\n" . implode("\n", $opts);
 
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         array(
             'model' => worker_model_for_task('poll_pick'),
             'messages' => array(
@@ -4586,7 +4590,7 @@ function worker_pick_poll_option_and_reason($bot, $topicTitle, $targetRaw, $poll
             ),
             'temperature' => 0.3,
         ),
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
         return array('ok' => false, 'error' => 'LLM poll pick failed.');
@@ -5003,9 +5007,9 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
     );
 
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         $payload,
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
 
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
@@ -5107,9 +5111,9 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
             'temperature' => 0.55,
         );
         $rewriteRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             $rewritePayload,
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($rewriteRes['ok'] && isset($rewriteRes['body']['choices'][0]['message']['content'])) {
             $rewritten = trim((string)$rewriteRes['body']['choices'][0]['message']['content']);
@@ -5145,7 +5149,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
             . $pollContextBlock . "\n\n"
             . "Current draft:\n{$txt}\n\nRewrite with a distinct angle.";
         $novelRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             array(
                 'model' => worker_model_for_task('reply_rewrite', array('technical' => $isTechnicalQuestion)),
                 'messages' => array(
@@ -5154,7 +5158,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 ),
                 'temperature' => 0.72,
             ),
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($novelRes['ok'] && isset($novelRes['body']['choices'][0]['message']['content'])) {
             $novelTxt = trim((string)$novelRes['body']['choices'][0]['message']['content']);
@@ -5193,7 +5197,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
             . $pollContextBlock . "\n\n"
             . "Current draft:\n{$txt}\n\nRewrite with a different angle.";
         $selfNovelRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             array(
                 'model' => worker_model_for_task('reply_rewrite', array('technical' => $isTechnicalQuestion)),
                 'messages' => array(
@@ -5202,7 +5206,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 ),
                 'temperature' => 0.72,
             ),
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($selfNovelRes['ok'] && isset($selfNovelRes['body']['choices'][0]['message']['content'])) {
             $selfNovelTxt = trim((string)$selfNovelRes['body']['choices'][0]['message']['content']);
@@ -5237,7 +5241,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
         $saturationUser = "Topic title: {$topicTitle}\nTarget content:\n" . substr($opRaw, 0, 1200)
             . "\n\n{$saturatedContext}\n\nCurrent draft:\n{$txt}\n\nRewrite with a different relevant example.";
         $saturationRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             array(
                 'model' => worker_model_for_task('reply_rewrite', array('technical' => $isTechnicalQuestion)),
                 'messages' => array(
@@ -5246,7 +5250,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 ),
                 'temperature' => 0.72,
             ),
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($saturationRes['ok'] && isset($saturationRes['body']['choices'][0]['message']['content'])) {
             $satTxt = trim((string)$saturationRes['body']['choices'][0]['message']['content']);
@@ -5275,7 +5279,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
             . ($latestSameBotPostRaw !== '' ? $latestSameBotPostRaw : '(unavailable)')
             . "\n\nCurrent draft:\n{$txt}\n\nRewrite so it reads as an additional pick, not a replacement.";
         $continuityRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             array(
                 'model' => worker_model_for_task('reply_rewrite', array('technical' => $isTechnicalQuestion)),
                 'messages' => array(
@@ -5284,7 +5288,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 ),
                 'temperature' => 0.72,
             ),
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($continuityRes['ok'] && isset($continuityRes['body']['choices'][0]['message']['content'])) {
             $continuityTxt = trim((string)$continuityRes['body']['choices'][0]['message']['content']);
@@ -5305,7 +5309,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
             . substr($opRaw, 0, 1200)
             . "\n\nCurrent draft:\n{$txt}\n\nRewrite as a short appreciative reaction.";
         $memeRes = post_json(
-            'https://api.openai.com/v1/chat/completions',
+            'llm:chat',
             array(
                 'model' => worker_model_for_task('reply_rewrite', array('technical' => $isTechnicalQuestion)),
                 'messages' => array(
@@ -5314,7 +5318,7 @@ function generate_reply_text($bot, $topicTitle, $opUsername, $opRaw, $linkData, 
                 ),
                 'temperature' => 0.7,
             ),
-            array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+            array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
         );
         if ($memeRes['ok'] && isset($memeRes['body']['choices'][0]['message']['content'])) {
             $memeTxt = trim((string)$memeRes['body']['choices'][0]['message']['content']);
@@ -5484,7 +5488,7 @@ function worker_generate_minimal_fallback_reply($bot, $topicTitle, $targetUserna
     $isTechnical = is_codey_topic((string)$topicTitle, (string)$targetRaw)
         || (function_exists('kirupa_is_technical_text') && kirupa_is_technical_text((string)$topicTitle . "\n" . (string)$targetRaw));
     $model = worker_model_for_task($isTechnical ? 'reply_generation_technical' : 'reply_generation', array('technical' => $isTechnical));
-    if (!is_string($model) || trim($model) === '' || KONVO_OPENAI_API_KEY === '') return '';
+    if (!is_string($model) || trim($model) === '' || KONVO_ANTHROPIC_API_KEY === '') return '';
 
     $recentOpeningHints = implode("\n", array_map(static function ($s) { return '- ' . $s; }, worker_recent_opening_stems(worker_load_opening_memory(), 96, 20)));
     if (trim((string)$recentOpeningHints) === '') $recentOpeningHints = '(none)';
@@ -5498,7 +5502,7 @@ function worker_generate_minimal_fallback_reply($bot, $topicTitle, $targetUserna
         . ' Do not sign your post; the forum already shows your username.';
     $user = "Topic title: {$topicTitle}\n\nTarget post by @{$targetUsername}:\n{$targetRaw}\n\nAvoid these recent opener stems:\n{$recentOpeningHints}\n\nWrite the fallback reply now.";
     $res = post_json(
-        'https://api.openai.com/v1/chat/completions',
+        'llm:chat',
         array(
             'model' => $model,
             'messages' => array(
@@ -5507,7 +5511,7 @@ function worker_generate_minimal_fallback_reply($bot, $topicTitle, $targetUserna
             ),
             'temperature' => 0.55,
         ),
-        array('Authorization: Bearer ' . KONVO_OPENAI_API_KEY)
+        array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) return '';
     $txt = trim((string)$res['body']['choices'][0]['message']['content']);
@@ -5549,8 +5553,8 @@ if (!$dryRun && !worker_acquire_run_lock()) {
 if (KONVO_DISCOURSE_API_KEY === '') {
     out_json(500, array('ok' => false, 'error' => 'DISCOURSE_API_KEY is not configured on the server.'));
 }
-if (KONVO_OPENAI_API_KEY === '') {
-    out_json(500, array('ok' => false, 'error' => 'OPENAI_API_KEY is not configured on the server.'));
+if (KONVO_ANTHROPIC_API_KEY === '') {
+    out_json(500, array('ok' => false, 'error' => 'ANTHROPIC_API_KEY is not configured on the server.'));
 }
 
 $latest = fetch_json(rtrim(KONVO_BASE_URL, '/') . '/latest.json');
