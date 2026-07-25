@@ -4051,7 +4051,7 @@ function pick_candidate_topic($topics, $seenState)
     return $pool[0];
 }
 
-function worker_is_quiz_verdict_topic_title($title)
+function worker_is_quiz_ack_topic_title($title)
 {
     $t = strtolower(trim((string)$title));
     if ($t === '') return false;
@@ -4059,10 +4059,10 @@ function worker_is_quiz_verdict_topic_title($title)
 }
 
 // "Spot the Bug" and "JS Quiz" threads are challenges: when a human posts a text
-// reply guessing the bug/answer, they should get a direct verdict (right or wrong)
-// promptly, not just folded into the general conversational reply pool. Checked
-// on every run (ahead of consensus/orphan picks) so it lands well within 24h.
-function worker_find_quiz_verdict_target($topics, $seenState, $maxScan = 20)
+// reply guessing the bug/answer, they get a prompt playful acknowledgement that
+// gives nothing away. The actual answer is revealed once, ~24h after the topic
+// was posted, by konvo_js_quiz_answer_worker.php.
+function worker_find_quiz_ack_target($topics, $seenState, $maxScan = 20)
 {
     if (!is_array($topics) || $topics === array()) return null;
     $pool = array();
@@ -4076,8 +4076,8 @@ function worker_find_quiz_verdict_target($topics, $seenState, $maxScan = 20)
         $postsCount = isset($t['posts_count']) ? (int)$t['posts_count'] : 0;
         if ($topicId <= 0 || !$visible || $closed || $archived) continue;
         if ($postsCount < 2) continue;
-        if (!worker_is_quiz_verdict_topic_title($title)) continue;
-        $idKey = 'quizverdict:' . $topicId;
+        if (!worker_is_quiz_ack_topic_title($title)) continue;
+        $idKey = 'quizack:' . $topicId;
         $seenAt = isset($seenState[$idKey]) ? (int)$seenState[$idKey] : 0;
         if ($seenAt > 0 && (time() - $seenAt) < (3 * 3600)) continue;
         $pool[] = $t;
@@ -4114,7 +4114,7 @@ function worker_find_quiz_verdict_target($topics, $seenState, $maxScan = 20)
     return null;
 }
 
-function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRun)
+function worker_generate_and_post_quiz_ack($bots, array $target, bool $dryRun)
 {
     $topic = $target['topic'];
     $topicId = (int)$target['topic_id'];
@@ -4137,16 +4137,16 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
         . "First decide whether their reply is actually an attempt at answering the challenge. "
         . "Not every reply is: people also welcome new members, thank someone, joke, or chat about something else. That is normal and welcome. "
         . "If it is NOT an answer attempt, set answer_attempt to false and simply take part in what they were actually doing - if they welcomed someone, welcome that person too; if they thanked someone, agree. "
-        . "Never correct them, never tell them they did not spot the bug, never restate the challenge at them, and never judge their post for being off-topic. "
-        . "If it IS an answer attempt, set answer_attempt to true. Read the original post below (it contains the code/question, and for Spot the Bug the correct bug/fix is not spelled out - you must work it out yourself). "
-        . "Independently work out what the actual bug or correct answer is, then judge whether the human's reply substantively identifies it - it does not need to be word-for-word. "
-        . "Write a short, natural, in-character forum reply directly to them: clearly confirm whether they got it right, and briefly state the actual answer/fix in your own words. "
-        . "Either way: 1 to 3 sentences. No essay, no headers, no bullet list, no em dash, no sign-off line.\n"
-        . "Return ONLY JSON: {\"answer_attempt\": true or false, \"correct\": true or false, \"reply\": \"...\"}. "
-        . "When answer_attempt is false, correct is ignored.";
+        . "Never correct them, never restate the challenge at them, and never judge their post for being off-topic.\n\n"
+        . "If it IS an answer attempt, set answer_attempt to true. Do NOT say whether they are right or wrong, and do NOT reveal, hint at, restate, or narrow down the answer. "
+        . "Acknowledge that they have put a guess in, be playful and a little cryptic about it, and say the answer goes up later today. "
+        . "Give away nothing they could use to work it out: no confirming, no denying, no warmer/colder, no pointing at the relevant line or concept. "
+        . "Vary the wording - this should not read like a canned autoresponse to anyone reading several of these threads.\n"
+        . "Either way: 1 to 2 sentences. No essay, no headers, no bullet list, no em dash, no sign-off line.\n"
+        . "Return ONLY JSON: {\"answer_attempt\": true or false, \"reply\": \"...\"}.";
     $user = "Original post:\n{$opRaw}\n\n"
         . "Human's reply (@{$humanUsername}):\n{$humanRaw}\n\n"
-        . "Write your verdict reply now.";
+        . "Write your reply now.";
 
     $payload = array(
         'model' => worker_model_for_task('reply_generation'),
@@ -4162,22 +4162,22 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
         array('Authorization: Bearer ' . KONVO_ANTHROPIC_API_KEY)
     );
     if (!$res['ok'] || !isset($res['body']['choices'][0]['message']['content'])) {
-        return array('ok' => false, 'error' => 'OpenAI request failed for quiz verdict.');
+        return array('ok' => false, 'error' => 'Claude request failed for quiz acknowledgement.');
     }
     $content = trim((string)$res['body']['choices'][0]['message']['content']);
     $obj = worker_extract_json_object($content);
     if (!is_array($obj) || !isset($obj['reply'])) {
-        return array('ok' => false, 'error' => 'Could not parse verdict JSON.');
+        return array('ok' => false, 'error' => 'Could not parse acknowledgement JSON.');
     }
     $replyText = trim((string)$obj['reply']);
     if ($replyText === '') {
-        return array('ok' => false, 'error' => 'Empty verdict reply.');
+        return array('ok' => false, 'error' => 'Empty acknowledgement reply.');
     }
     if (function_exists('worker_enforce_banned_phrase_cleanup')) {
         $replyText = worker_enforce_banned_phrase_cleanup($replyText);
     }
     $replyText = normalize_signature($replyText, $signature);
-    $correct = (bool)($obj['correct'] ?? false);
+    $answerAttempt = (bool)($obj['answer_attempt'] ?? false);
 
     if ($dryRun) {
         return array(
@@ -4185,7 +4185,7 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
             'dry_run' => true,
             'topic_id' => $topicId,
             'bot' => $bot,
-            'correct' => $correct,
+            'answer_attempt' => $answerAttempt,
             'reply_preview' => $replyText,
         );
     }
@@ -4206,7 +4206,7 @@ function worker_generate_and_post_quiz_verdict($bots, array $target, bool $dryRu
         'ok' => (bool)($postRes['ok'] ?? false),
         'topic_id' => $topicId,
         'bot' => $bot,
-        'correct' => $correct,
+        'answer_attempt' => $answerAttempt,
         'reply_text' => $replyText,
         'post_result' => $postRes,
     );
@@ -5569,14 +5569,14 @@ if (!is_array($latest) || !isset($latest['topic_list']['topics']) || !is_array($
 
 $seen = load_seen_topics();
 
-$quizVerdictTarget = worker_find_quiz_verdict_target($latest['topic_list']['topics'], $seen, 20);
-if (is_array($quizVerdictTarget)) {
-    $verdictResult = worker_generate_and_post_quiz_verdict($bots, $quizVerdictTarget, $dryRun);
+$quizAckTarget = worker_find_quiz_ack_target($latest['topic_list']['topics'], $seen, 20);
+if (is_array($quizAckTarget)) {
+    $ackResult = worker_generate_and_post_quiz_ack($bots, $quizAckTarget, $dryRun);
     if (!$dryRun) {
-        $seen['quizverdict:' . (int)$quizVerdictTarget['topic_id']] = time();
+        $seen['quizack:' . (int)$quizAckTarget['topic_id']] = time();
         save_seen_topics($seen);
     }
-    out_json(200, array_merge(array('ok' => (bool)($verdictResult['ok'] ?? false), 'action' => 'quiz_verdict_reply'), $verdictResult));
+    out_json(200, array_merge(array('ok' => (bool)($ackResult['ok'] ?? false), 'action' => 'quiz_ack_reply'), $ackResult));
 }
 
 $consensusState = worker_consensus_load();
