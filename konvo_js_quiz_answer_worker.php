@@ -370,17 +370,30 @@ function jsqa_build_scoreboard(array $attempts, array $grades): string
 {
     if ($attempts === array() || $grades === array()) return '';
 
+    // One person can post several guesses; credit them once, at their earliest
+    // correct attempt. Without this the scoreboard reads "@sock, @sock, @sock".
     $correct = array();
     $wrong = array();
+    $seenCorrect = array();
+    $seenWrong = array();
     foreach ($attempts as $a) {
         $g = $grades[(int)$a['post_number']] ?? null;
         if (!is_array($g) || empty($g['is_attempt'])) continue; // ignore chit-chat
+        $uKey = strtolower((string)$a['username']);
         if (!empty($g['correct'])) {
+            if (isset($seenCorrect[$uKey])) continue;
+            $seenCorrect[$uKey] = true;
             $correct[] = $a;
         } else {
+            if (isset($seenWrong[$uKey])) continue;
+            $seenWrong[$uKey] = true;
             $wrong[] = array('attempt' => $a, 'why' => (string)$g['why_wrong']);
         }
     }
+    // Someone who eventually got it right should not also be listed as wrong.
+    $wrong = array_values(array_filter($wrong, function ($w) use ($seenCorrect) {
+        return !isset($seenCorrect[strtolower((string)$w['attempt']['username'])]);
+    }));
     if ($correct === array() && $wrong === array()) return '';
 
     $lines = array();
@@ -483,10 +496,23 @@ function jsqa_topic_has_spot_answer(array $topicBody): bool
         : array();
     foreach ($posts as $post) {
         if (!is_array($post)) continue;
-        if (!jsqa_is_bot_user((string)($post['username'] ?? ''))) continue;
+        // Deliberately author-agnostic. Keying this on "was it a bot" meant an
+        // answer posted under a non-bot name was invisible to the check, and the
+        // worker re-answered the same topic every hour.
         if (strpos(jsqa_post_text($post), 'Spot the Bug answer') !== false) return true;
     }
     return false;
+}
+
+/**
+ * Only ever reveal on challenges the bots actually set: the generated format is
+ * "Spot the bug - #N: Title". A human thread that merely mentions spotting a bug
+ * is not ours to answer, and must never be posted into under their name.
+ */
+function jsqa_is_bot_authored_challenge(string $title, string $opUsername): bool
+{
+    if (!jsqa_is_bot_user($opUsername)) return false;
+    return (bool)preg_match('/spot\s+the\s+bug\s*-\s*#\d+/i', trim($title));
 }
 
 /**
@@ -507,6 +533,7 @@ function jsqa_find_spot_target(array $headers, int $minAgeSecs, int $topicFilter
         if ($topicId <= 0) continue;
         if ($topicFilter > 0 && $topicId !== $topicFilter) continue;
         if (!jsqa_is_spot_the_bug_title((string)($t['title'] ?? ''))) continue;
+        if (!preg_match('/spot\s+the\s+bug\s*-\s*#\d+/i', (string)($t['title'] ?? ''))) continue;
         if (!empty($t['closed']) || !empty($t['archived'])) continue;
         if (isset($t['visible']) && !$t['visible']) continue;
 
@@ -531,6 +558,9 @@ function jsqa_find_spot_target(array $headers, int $minAgeSecs, int $topicFilter
         $c['op_text'] = jsqa_post_text(is_array($op) ? $op : array());
         $c['op_post_number'] = (int)($op['post_number'] ?? 1);
         $c['bot_username'] = trim((string)($op['username'] ?? 'BayMax'));
+        // Hard stop: never post into a topic a human started, and never post
+        // under a human's name.
+        if (!jsqa_is_bot_authored_challenge((string)$c['title'], (string)$c['bot_username'])) continue;
         if ($c['op_text'] === '') continue;
         return $c;
     }
@@ -542,9 +572,11 @@ function jsqa_find_spot_target(array $headers, int $minAgeSecs, int $topicFilter
  */
 function jsqa_solve_spot_the_bug(string $opText): array
 {
-    $system = "You are solving a 'Spot the Bug' challenge posted on a friendly web development forum.\n"
+    $system = "You are solving a 'Spot the Bug' challenge posted on a friendly developer forum.\n"
         . "Read the snippet and work out the single intended bug. Be precise and correct - this is published as the official answer.\n"
-        . "Return ONLY JSON: {\"bug\": \"one sentence naming the bug\", \"fix\": \"the corrected code or the specific change, short\", \"why\": \"2 to 3 sentences explaining why it behaves that way\"}.\n"
+        . "Answer in the language the snippet is actually written in. Do not assume JavaScript: identify the language from the code itself and report it.\n"
+        . "If you cannot identify a definite bug, set bug to an empty string rather than guessing.\n"
+        . "Return ONLY JSON: {\"language\": \"js|cpp|python|...\", \"bug\": \"one sentence naming the bug\", \"fix\": \"the corrected code or the specific change, short\", \"why\": \"2 to 3 sentences explaining why it behaves that way\"}.\n"
         . "No em dash anywhere. Do not add commentary outside the JSON.";
 
     $res = konvo_anthropic_chat_json(array(
@@ -571,6 +603,7 @@ function jsqa_solve_spot_the_bug(string $opText): array
     }
     if (!is_array($obj)) return array();
     return array(
+        'language' => trim((string)($obj['language'] ?? '')),
         'bug' => trim((string)($obj['bug'] ?? '')),
         'fix' => trim((string)($obj['fix'] ?? '')),
         'why' => trim((string)($obj['why'] ?? '')),
@@ -585,8 +618,10 @@ function jsqa_build_spot_answer_raw(array $solution, string $scoreboard, string 
     if ($fix !== '') {
         $lines[] = '';
         $lines[] = '**The fix:**';
+        $lang = preg_replace('/[^a-z0-9+#]/i', '', (string)($solution['language'] ?? ''));
+        if ($lang === '') $lang = 'text';
         $lines[] = (strpos($fix, "\n") !== false || strpos($fix, '(') !== false)
-            ? ("```js\n" . $fix . "\n```")
+            ? ("```" . $lang . "\n" . $fix . "\n```")
             : $fix;
     }
     $why = trim((string)($solution['why'] ?? ''));
