@@ -366,9 +366,9 @@ function jsqa_grade_attempts(string $challenge, string $correctAnswer, array $at
 /**
  * Markdown scoreboard: who was right, who was first, and why wrong answers missed.
  */
-function jsqa_build_scoreboard(array $attempts, array $grades): string
+function jsqa_build_scoreboard(array $attempts, array $grades): array
 {
-    if ($attempts === array() || $grades === array()) return '';
+    if ($attempts === array() || $grades === array()) return array('markdown' => '', 'first' => '');
 
     // One person can post several guesses; credit them once, at their earliest
     // correct attempt. Without this the scoreboard reads "@sock, @sock, @sock".
@@ -394,7 +394,7 @@ function jsqa_build_scoreboard(array $attempts, array $grades): string
     $wrong = array_values(array_filter($wrong, function ($w) use ($seenCorrect) {
         return !isset($seenCorrect[strtolower((string)$w['attempt']['username'])]);
     }));
-    if ($correct === array() && $wrong === array()) return '';
+    if ($correct === array() && $wrong === array()) return array('markdown' => '', 'first' => '');
 
     $lines = array();
     $lines[] = '';
@@ -426,6 +426,106 @@ function jsqa_build_scoreboard(array $attempts, array $grades): string
         }
     }
 
+    return array(
+        'markdown' => implode("\n", $lines),
+        'first' => $correct !== array() ? (string)$correct[0]['username'] : '',
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Global "first correct answer" leaderboard.
+// ---------------------------------------------------------------------------
+
+function jsqa_leaderboard_path(): string
+{
+    $dir = __DIR__ . '/.konvo_state';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    return $dir . '/quiz_first_answer_leaderboard.json';
+}
+
+function jsqa_load_leaderboard(): array
+{
+    $p = jsqa_leaderboard_path();
+    if (!is_file($p)) return array('counts' => array(), 'counted_topics' => array());
+    $raw = @file_get_contents($p);
+    if (!is_string($raw) || trim($raw) === '') return array('counts' => array(), 'counted_topics' => array());
+    $d = json_decode($raw, true);
+    if (!is_array($d)) return array('counts' => array(), 'counted_topics' => array());
+    if (!isset($d['counts']) || !is_array($d['counts'])) $d['counts'] = array();
+    if (!isset($d['counted_topics']) || !is_array($d['counted_topics'])) $d['counted_topics'] = array();
+    return $d;
+}
+
+/**
+ * Award a win. Keyed by topic so a re-run can never double-count someone.
+ * Returns the updated board without writing when $persist is false, so a dry
+ * run previews the same numbers the live post would show.
+ */
+function jsqa_award_first(array $board, string $username, int $topicId, bool $persist): array
+{
+    $username = trim($username);
+    if ($username === '' || $topicId <= 0) return $board;
+    if (in_array($topicId, array_map('intval', $board['counted_topics']), true)) return $board;
+
+    $key = strtolower($username);
+    if (!isset($board['counts'][$key]) || !is_array($board['counts'][$key])) {
+        $board['counts'][$key] = array('display' => $username, 'wins' => 0);
+    }
+    $board['counts'][$key]['display'] = $username;
+    $board['counts'][$key]['wins'] = (int)$board['counts'][$key]['wins'] + 1;
+    $board['counted_topics'][] = $topicId;
+    if (count($board['counted_topics']) > 500) {
+        $board['counted_topics'] = array_slice($board['counted_topics'], -500, 500);
+    }
+
+    if ($persist) {
+        @file_put_contents(jsqa_leaderboard_path(), json_encode($board, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+    return $board;
+}
+
+function jsqa_render_leaderboard(array $board, int $limit = 10): string
+{
+    $counts = isset($board['counts']) && is_array($board['counts']) ? $board['counts'] : array();
+    if ($counts === array()) return '';
+
+    $rows = array();
+    foreach ($counts as $key => $row) {
+        if (!is_array($row)) continue;
+        $wins = (int)($row['wins'] ?? 0);
+        if ($wins < 1) continue;
+        $rows[] = array('name' => (string)($row['display'] ?? $key), 'wins' => $wins);
+    }
+    if ($rows === array()) return '';
+
+    usort($rows, function ($a, $b) {
+        if ($a['wins'] === $b['wins']) return strcasecmp($a['name'], $b['name']);
+        return $b['wins'] <=> $a['wins'];
+    });
+    $total = count($rows);
+    $rows = array_slice($rows, 0, max(1, $limit));
+
+    $lines = array();
+    $lines[] = '';
+    $lines[] = '**First-answer leaderboard**';
+    $lines[] = '';
+    $rank = 0;
+    $lastWins = null;
+    $shown = 0;
+    foreach ($rows as $r) {
+        $shown++;
+        // Ties share a rank.
+        if ($lastWins === null || $r['wins'] !== $lastWins) {
+            $rank = $shown;
+            $lastWins = $r['wins'];
+        }
+        $medal = $rank === 1 ? ' :trophy:' : '';
+        $lines[] = $rank . '. @' . $r['name'] . ' - ' . $r['wins'] . ' (' . ($r['wins'] === 1 ? 'first' : 'firsts') . ')' . $medal;
+    }
+    if ($total > count($rows)) {
+        $lines[] = '';
+        $lines[] = '*Top ' . count($rows) . ' of ' . $total . '.*';
+    }
     return implode("\n", $lines);
 }
 
@@ -698,7 +798,16 @@ if ($pickedIdx < 0) {
     $spotGrades = $spotAttempts !== array()
         ? jsqa_grade_attempts((string)$spot['op_text'], $spotCorrect, $spotAttempts)
         : array();
-    $spotScoreboard = jsqa_build_scoreboard($spotAttempts, $spotGrades);
+    $spotBoardData = jsqa_build_scoreboard($spotAttempts, $spotGrades);
+    $spotScoreboard = (string)$spotBoardData['markdown'];
+    // Award the win and show the running leaderboard. Persist only on a real
+    // post, so a dry run previews the same numbers without banking them.
+    $spotLb = jsqa_load_leaderboard();
+    $spotLb = jsqa_award_first($spotLb, (string)$spotBoardData['first'], (int)$spot['topic_id'], !$dryRun);
+    $spotLbMd = jsqa_render_leaderboard($spotLb, 10);
+    if ($spotLbMd !== '') {
+        $spotScoreboard .= "\n" . $spotLbMd;
+    }
 
     $spotSigSeed = strtolower($spotBot . '|' . (int)$spot['topic_id'] . '|spot-answer');
     $spotSignature = function_exists('konvo_signature_base_name') ? konvo_signature_base_name($spotBot) : $spotBot;
@@ -810,7 +919,14 @@ if (isset($quizPosts[0]) && is_array($quizPosts[0])) {
     $challengeText = jsqa_post_text($quizPosts[0]);
 }
 $grades = $attempts !== array() ? jsqa_grade_attempts($challengeText, $correctAnswerText, $attempts) : array();
-$scoreboard = jsqa_build_scoreboard($attempts, $grades);
+$boardData = jsqa_build_scoreboard($attempts, $grades);
+$scoreboard = (string)$boardData['markdown'];
+$leaderboard = jsqa_load_leaderboard();
+$leaderboard = jsqa_award_first($leaderboard, (string)$boardData['first'], $topicId, !$dryRun);
+$leaderboardMd = jsqa_render_leaderboard($leaderboard, 10);
+if ($leaderboardMd !== '') {
+    $scoreboard .= "\n" . $leaderboardMd;
+}
 
 $answerRaw = jsqa_build_answer_raw($item, $signature, $scoreboard);
 if ($dryRun) {
