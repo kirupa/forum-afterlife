@@ -443,17 +443,98 @@ function jsqa_leaderboard_path(): string
     return $dir . '/quiz_first_answer_leaderboard.json';
 }
 
+function jsqa_leaderboard_empty(): array
+{
+    return array('counts' => array(), 'counted_topics' => array(), 'total_awarded' => 0, '_unreadable' => false);
+}
+
+/**
+ * The tally is an accumulator, never recomputed from the forum: deleting posts
+ * or a topic ageing out of latest.json can never reduce it.
+ *
+ * The real risk is the state file itself. A missing file legitimately means
+ * "no wins yet", but an unreadable or malformed one must NOT be treated that
+ * way: writing a fresh board over it would silently erase every past win. In
+ * that case the board is flagged unreadable and awarding refuses to persist.
+ */
 function jsqa_load_leaderboard(): array
 {
+    $empty = jsqa_leaderboard_empty();
     $p = jsqa_leaderboard_path();
-    if (!is_file($p)) return array('counts' => array(), 'counted_topics' => array());
+    if (!is_file($p)) return $empty; // genuinely new board
+
     $raw = @file_get_contents($p);
-    if (!is_string($raw) || trim($raw) === '') return array('counts' => array(), 'counted_topics' => array());
-    $d = json_decode($raw, true);
-    if (!is_array($d)) return array('counts' => array(), 'counted_topics' => array());
-    if (!isset($d['counts']) || !is_array($d['counts'])) $d['counts'] = array();
+    $bad = $empty;
+    $bad['_unreadable'] = true;
+
+    $unreadable = (!is_string($raw) || trim($raw) === '');
+    $d = $unreadable ? null : json_decode($raw, true);
+    if ($unreadable || !is_array($d) || !isset($d['counts']) || !is_array($d['counts'])) {
+        // Preserve the damaged file once for forensics. Guarded so repeated runs
+        // do not litter the state directory with copies.
+        if (glob($p . '.corrupt.*') === array()) {
+            @copy($p, $p . '.corrupt.' . date('Ymd-His'));
+        }
+        return $bad;
+    }
+
     if (!isset($d['counted_topics']) || !is_array($d['counted_topics'])) $d['counted_topics'] = array();
+    if (!isset($d['total_awarded'])) {
+        $sum = 0;
+        foreach ($d['counts'] as $row) {
+            if (is_array($row)) $sum += (int)($row['wins'] ?? 0);
+        }
+        $d['total_awarded'] = $sum;
+    }
+    $d['_unreadable'] = false;
     return $d;
+}
+
+function jsqa_leaderboard_total(array $board): int
+{
+    $sum = 0;
+    foreach (($board['counts'] ?? array()) as $row) {
+        if (is_array($row)) $sum += (int)($row['wins'] ?? 0);
+    }
+    return $sum;
+}
+
+/**
+ * Atomic, monotonic save. Writes to a temp file and renames, so a crash cannot
+ * leave a half-written board behind, and refuses any write that would lower the
+ * running total.
+ */
+function jsqa_save_leaderboard(array $board): bool
+{
+    if (!empty($board['_unreadable'])) return false;
+
+    $path = jsqa_leaderboard_path();
+    $newTotal = jsqa_leaderboard_total($board);
+
+    $onDisk = jsqa_load_leaderboard();
+    if (empty($onDisk['_unreadable'])) {
+        $oldTotal = jsqa_leaderboard_total($onDisk);
+        if ($newTotal < $oldTotal) {
+            return false; // never let the tally go backwards
+        }
+    } elseif (is_file($path)) {
+        // On-disk board is unreadable (already backed up on load). Never
+        // overwrite it with a fresh board - that would erase the real history.
+        return false;
+    }
+
+    $board['total_awarded'] = $newTotal;
+    unset($board['_unreadable']);
+
+    $tmp = $path . '.tmp.' . getmypid();
+    $json = json_encode($board, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json)) return false;
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false) return false;
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -465,6 +546,9 @@ function jsqa_award_first(array $board, string $username, int $topicId, bool $pe
 {
     $username = trim($username);
     if ($username === '' || $topicId <= 0) return $board;
+    // Refuse to build on a board we could not read; awarding here would later be
+    // written out as a brand new board and erase the real history.
+    if (!empty($board['_unreadable'])) return $board;
     if (in_array($topicId, array_map('intval', $board['counted_topics']), true)) return $board;
 
     $key = strtolower($username);
@@ -473,13 +557,12 @@ function jsqa_award_first(array $board, string $username, int $topicId, bool $pe
     }
     $board['counts'][$key]['display'] = $username;
     $board['counts'][$key]['wins'] = (int)$board['counts'][$key]['wins'] + 1;
+    // Keep every awarded topic id. Trimming this list would let a very old topic
+    // be awarded a second time if its answer post were ever removed.
     $board['counted_topics'][] = $topicId;
-    if (count($board['counted_topics']) > 500) {
-        $board['counted_topics'] = array_slice($board['counted_topics'], -500, 500);
-    }
 
     if ($persist) {
-        @file_put_contents(jsqa_leaderboard_path(), json_encode($board, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        jsqa_save_leaderboard($board);
     }
     return $board;
 }
@@ -827,6 +910,7 @@ if ($pickedIdx < 0) {
             'bot_username' => $spotBot,
             'human_attempts' => count($spotAttempts),
             'graded' => count($spotGrades),
+            'leaderboard_unreadable' => !empty($spotLb['_unreadable']),
             'raw_preview' => $spotRaw,
         ));
     }
@@ -939,6 +1023,7 @@ if ($dryRun) {
         'reply_to_post_number' => $quizPostNumber,
         'human_attempts' => count($attempts),
         'graded' => count($grades),
+        'leaderboard_unreadable' => !empty($leaderboard['_unreadable']),
         'raw_preview' => $answerRaw,
     ));
 }
