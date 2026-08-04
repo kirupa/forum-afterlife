@@ -306,7 +306,7 @@ function jsqa_collect_human_attempts(array $topicBody, int $challengePostNumber)
  * Returns [post_number => ['is_attempt'=>bool,'correct'=>bool,'why_wrong'=>string]].
  * A failure here is non-fatal: the reveal still posts, just without a scoreboard.
  */
-function jsqa_grade_attempts(string $challenge, string $correctAnswer, array $attempts): array
+function jsqa_grade_attempts(string $challenge, string $correctAnswer, array $attempts, string $kind = 'spot_the_bug'): array
 {
     if ($attempts === array()) return array();
 
@@ -316,10 +316,12 @@ function jsqa_grade_attempts(string $challenge, string $correctAnswer, array $at
     }
 
     $system = "You are grading answers to a code challenge on a friendly forum.\n"
-        . "You are given the challenge, the correct answer, and numbered replies from people.\n"
+        . "You are given the challenge, a reference answer, and numbered replies from people.\n"
         . "For each reply decide:\n"
         . "- is_attempt: did they actually try to answer, or were they just chatting/welcoming/joking?\n"
-        . "- correct: does their answer substantively match the correct answer? It does not need to be word for word, and partial-but-right reasoning counts as correct. Be fair, not pedantic.\n"
+        . ($kind === 'coding_challenge'
+            ? "- correct: does their code actually satisfy the task? A coding challenge has many valid solutions, so judge it on whether it works and respects the stated rules, NOT on whether it resembles the reference. Different style, different approach and different variable names are all fine. Minor syntax slips in an otherwise working answer still count as correct.\n"
+            : "- correct: does their answer substantively match the correct answer? It does not need to be word for word, and partial-but-right reasoning counts as correct. Be fair, not pedantic.\n")
         . "- why_wrong: only when they attempted and got it wrong, one short sentence on what they missed. Be kind and specific. Empty string otherwise.\n"
         . "Return ONLY JSON: {\"grades\": [{\"n\": 1, \"is_attempt\": true, \"correct\": false, \"why_wrong\": \"...\"}]} with one entry per numbered reply.";
 
@@ -667,9 +669,24 @@ function jsqa_build_answer_raw(array $item, string $signature, string $scoreboar
 
 if (!defined('JSQA_SPOT_ANSWER_MARKER')) define('JSQA_SPOT_ANSWER_MARKER', '**Spot the Bug answer:**');
 
-function jsqa_is_spot_the_bug_title($title): bool
+/**
+ * Titles the bots generate for challenge topics we are allowed to answer.
+ * Spot the Bug and Coding Challenge share the whole reveal pipeline: same
+ * grading, same scoreboard, same leaderboard.
+ */
+function jsqa_challenge_title_pattern(): string
 {
-    return stripos(trim((string)$title), 'spot the bug') !== false;
+    return '/(?:spot\s+the\s+bug|coding\s+challenge)\s*-\s*#\d+/i';
+}
+
+function jsqa_is_challenge_title($title): bool
+{
+    return (bool)preg_match(jsqa_challenge_title_pattern(), trim((string)$title));
+}
+
+function jsqa_challenge_kind(string $title): string
+{
+    return (stripos($title, 'coding challenge') !== false) ? 'coding_challenge' : 'spot_the_bug';
 }
 
 function jsqa_topic_has_spot_answer(array $topicBody): bool
@@ -682,7 +699,9 @@ function jsqa_topic_has_spot_answer(array $topicBody): bool
         // Deliberately author-agnostic. Keying this on "was it a bot" meant an
         // answer posted under a non-bot name was invisible to the check, and the
         // worker re-answered the same topic every hour.
-        if (strpos(jsqa_post_text($post), 'Spot the Bug answer') !== false) return true;
+        $txt = jsqa_post_text($post);
+        if (strpos($txt, 'Spot the Bug answer') !== false) return true;
+        if (strpos($txt, 'Challenge solution') !== false) return true;
     }
     return false;
 }
@@ -695,7 +714,7 @@ function jsqa_topic_has_spot_answer(array $topicBody): bool
 function jsqa_is_bot_authored_challenge(string $title, string $opUsername): bool
 {
     if (!jsqa_is_bot_user($opUsername)) return false;
-    return (bool)preg_match('/spot\s+the\s+bug\s*-\s*#\d+/i', trim($title));
+    return jsqa_is_challenge_title($title);
 }
 
 /**
@@ -715,8 +734,7 @@ function jsqa_find_spot_target(array $headers, int $minAgeSecs, int $topicFilter
         $topicId = (int)($t['id'] ?? 0);
         if ($topicId <= 0) continue;
         if ($topicFilter > 0 && $topicId !== $topicFilter) continue;
-        if (!jsqa_is_spot_the_bug_title((string)($t['title'] ?? ''))) continue;
-        if (!preg_match('/spot\s+the\s+bug\s*-\s*#\d+/i', (string)($t['title'] ?? ''))) continue;
+        if (!jsqa_is_challenge_title((string)($t['title'] ?? ''))) continue;
         if (!empty($t['closed']) || !empty($t['archived'])) continue;
         if (isset($t['visible']) && !$t['visible']) continue;
 
@@ -753,14 +771,24 @@ function jsqa_find_spot_target(array $headers, int $minAgeSecs, int $topicFilter
 /**
  * Work out the bug and the fix from the snippet itself.
  */
-function jsqa_solve_spot_the_bug(string $opText): array
+function jsqa_solve_spot_the_bug(string $opText, string $kind = 'spot_the_bug'): array
 {
-    $system = "You are solving a 'Spot the Bug' challenge posted on a friendly developer forum.\n"
-        . "Read the snippet and work out the single intended bug. Be precise and correct - this is published as the official answer.\n"
-        . "Answer in the language the snippet is actually written in. Do not assume JavaScript: identify the language from the code itself and report it.\n"
-        . "If you cannot identify a definite bug, set bug to an empty string rather than guessing.\n"
-        . "Return ONLY JSON: {\"language\": \"js|cpp|python|...\", \"bug\": \"one sentence naming the bug\", \"fix\": \"the corrected code or the specific change, short\", \"why\": \"2 to 3 sentences explaining why it behaves that way\"}.\n"
-        . "No em dash anywhere. Do not add commentary outside the JSON.";
+    if ($kind === 'coding_challenge') {
+        $system = "You are writing the official solution to a small coding challenge posted on a friendly developer forum.\n"
+            . "Read the task and write a correct, idiomatic solution. It is published as the reference answer, so it must actually work.\n"
+            . "Keep it plain CSS or plain JavaScript with no libraries, no build step and no framework, matching how the challenge was set.\n"
+            . "Identify the language from the task itself and report it.\n"
+            . "If the task is too vague to have a definite solution, set bug to an empty string rather than guessing.\n"
+            . "Return ONLY JSON: {\"language\": \"css|js|...\", \"bug\": \"one sentence describing the approach\", \"fix\": \"the solution code\", \"why\": \"2 to 3 sentences on why this works\"}.\n"
+            . "No em dash anywhere. Do not add commentary outside the JSON.";
+    } else {
+        $system = "You are solving a 'Spot the Bug' challenge posted on a friendly developer forum.\n"
+            . "Read the snippet and work out the single intended bug. Be precise and correct - this is published as the official answer.\n"
+            . "Answer in the language the snippet is actually written in. Do not assume JavaScript: identify the language from the code itself and report it.\n"
+            . "If you cannot identify a definite bug, set bug to an empty string rather than guessing.\n"
+            . "Return ONLY JSON: {\"language\": \"js|cpp|python|...\", \"bug\": \"one sentence naming the bug\", \"fix\": \"the corrected code or the specific change, short\", \"why\": \"2 to 3 sentences explaining why it behaves that way\"}.\n"
+            . "No em dash anywhere. Do not add commentary outside the JSON.";
+    }
 
     $res = konvo_anthropic_chat_json(array(
         'model' => konvo_model_for_task('code_repair', array('technical' => true)),
@@ -793,14 +821,15 @@ function jsqa_solve_spot_the_bug(string $opText): array
     );
 }
 
-function jsqa_build_spot_answer_raw(array $solution, string $scoreboard, string $signature): string
+function jsqa_build_spot_answer_raw(array $solution, string $scoreboard, string $signature, string $kind = 'spot_the_bug'): string
 {
     $lines = array();
-    $lines[] = JSQA_SPOT_ANSWER_MARKER . ' ' . (string)($solution['bug'] ?? '');
+    $marker = ($kind === 'coding_challenge') ? '**Challenge solution:**' : JSQA_SPOT_ANSWER_MARKER;
+    $lines[] = $marker . ' ' . (string)($solution['bug'] ?? '');
     $fix = trim((string)($solution['fix'] ?? ''));
     if ($fix !== '') {
         $lines[] = '';
-        $lines[] = '**The fix:**';
+        $lines[] = ($kind === 'coding_challenge') ? '**One way to do it:**' : '**The fix:**';
         $lang = preg_replace('/[^a-z0-9+#]/i', '', (string)($solution['language'] ?? ''));
         if ($lang === '') $lang = 'text';
         $lines[] = (strpos($fix, "\n") !== false || strpos($fix, '(') !== false)
@@ -867,11 +896,12 @@ if ($pickedIdx < 0) {
     $spotBot = (string)$spot['bot_username'];
     $spotHeaders[2] = 'Api-Username: ' . $spotBot;
 
-    $solution = jsqa_solve_spot_the_bug((string)$spot['op_text']);
+    $spotKind = jsqa_challenge_kind((string)$spot['title']);
+    $solution = jsqa_solve_spot_the_bug((string)$spot['op_text'], $spotKind);
     if (!is_array($solution) || trim((string)($solution['bug'] ?? '')) === '') {
         out_json(502, array(
             'ok' => false,
-            'error' => 'Could not work out the Spot the Bug answer.',
+            'error' => 'Could not work out the challenge answer.',
             'topic_id' => (int)$spot['topic_id'],
         ));
     }
@@ -879,7 +909,7 @@ if ($pickedIdx < 0) {
     $spotAttempts = jsqa_collect_human_attempts($spot['body'], (int)$spot['op_post_number']);
     $spotCorrect = trim((string)$solution['bug']) . "\n" . trim((string)($solution['fix'] ?? '')) . "\n" . trim((string)($solution['why'] ?? ''));
     $spotGrades = $spotAttempts !== array()
-        ? jsqa_grade_attempts((string)$spot['op_text'], $spotCorrect, $spotAttempts)
+        ? jsqa_grade_attempts((string)$spot['op_text'], $spotCorrect, $spotAttempts, $spotKind)
         : array();
     $spotBoardData = jsqa_build_scoreboard($spotAttempts, $spotGrades);
     $spotScoreboard = (string)$spotBoardData['markdown'];
@@ -898,13 +928,14 @@ if ($pickedIdx < 0) {
         $spotSignature = konvo_signature_with_optional_emoji($spotSignature, $spotSigSeed);
     }
 
-    $spotRaw = jsqa_build_spot_answer_raw($solution, $spotScoreboard, $spotSignature);
+    $spotRaw = jsqa_build_spot_answer_raw($solution, $spotScoreboard, $spotSignature, $spotKind);
 
     if ($dryRun) {
         out_json(200, array(
             'ok' => true,
             'dry_run' => true,
-            'action' => 'would_post_spot_the_bug_answer',
+            'action' => 'would_post_challenge_answer',
+            'challenge_kind' => $spotKind,
             'topic_id' => (int)$spot['topic_id'],
             'topic_title' => (string)$spot['title'],
             'bot_username' => $spotBot,
@@ -932,7 +963,8 @@ if ($pickedIdx < 0) {
     $spotPostNumber = (int)($spotPost['body']['post_number'] ?? 0);
     out_json(200, array(
         'ok' => true,
-        'action' => 'posted_spot_the_bug_answer',
+        'action' => 'posted_challenge_answer',
+        'challenge_kind' => $spotKind,
         'topic_id' => (int)$spot['topic_id'],
         'topic_url' => rtrim(KONVO_BASE_URL, '/') . '/t/' . (int)$spot['topic_id'] . '/' . $spotPostNumber,
         'bot_username' => $spotBot,

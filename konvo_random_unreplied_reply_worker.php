@@ -4055,7 +4055,9 @@ function worker_is_quiz_ack_topic_title($title)
 {
     $t = strtolower(trim((string)$title));
     if ($t === '') return false;
-    return (str_starts_with($t, 'spot the bug') || str_starts_with($t, 'js quiz:'));
+    return (str_starts_with($t, 'spot the bug')
+        || str_starts_with($t, 'js quiz:')
+        || str_starts_with($t, 'coding challenge'));
 }
 
 // "Spot the Bug" and "JS Quiz" threads are challenges: when a human posts a text
@@ -4131,7 +4133,14 @@ function worker_generate_and_post_quiz_ack($bots, array $target, bool $dryRun)
         ? konvo_compose_forum_persona_system_prompt(konvo_load_soul($soulKey, 'Write naturally, concise, and human.'))
         : 'Write naturally, concise, and human.';
 
-    $kind = $isSpotTheBug ? 'a "Spot the Bug" code challenge' : 'a JS quiz question';
+    $isCodingChallenge = stripos($topicTitle, 'coding challenge') !== false;
+    if ($isCodingChallenge) {
+        $kind = 'a "Coding Challenge" task where people post their own solution';
+    } elseif ($isSpotTheBug) {
+        $kind = 'a "Spot the Bug" code challenge';
+    } else {
+        $kind = 'a JS quiz question';
+    }
     $system = trim((string)$soul) . "\n\n"
         . "A human has replied in a thread containing {$kind}. "
         . "First decide whether their reply is actually an attempt at answering the challenge. "
