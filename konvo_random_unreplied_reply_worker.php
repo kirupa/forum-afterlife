@@ -15,7 +15,9 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/konvo_soul_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
 require_once __DIR__ . '/kirupa_article_helper.php';
+require_once __DIR__ . '/konvo_link_helper.php';
 require_once __DIR__ . '/konvo_anthropic_client.php';
+require_once __DIR__ . '/konvo_code_format_helper.php';
 $konvoForumPromptHelper = __DIR__ . '/konvo_forum_prompt_helper.php';
 if (is_file($konvoForumPromptHelper)) {
     require_once $konvoForumPromptHelper;
@@ -3920,6 +3922,18 @@ function worker_enforce_banned_phrase_cleanup($text)
     if (function_exists('kirupa_strip_invalid_kirupa_urls')) {
         $out = kirupa_strip_invalid_kirupa_urls((string)$out);
     }
+    
+    // Bots should link a destination's title, not paste a raw URL. Runs last so
+    // it also catches URLs the model wrote itself. No fetching here: a
+    // slug-derived title is good enough and keeps replies fast.
+    if (function_exists('konvo_linkify_bare_urls')) {
+        $out = konvo_linkify_bare_urls((string)$out, array(), false);
+    }
+    // Same idea for code: a snippet mentioned in prose should render as code.
+    if (function_exists('konvo_format_inline_code')) {
+        $out = konvo_format_inline_code((string)$out);
+    }
+
     return trim((string)$out);
 }
 

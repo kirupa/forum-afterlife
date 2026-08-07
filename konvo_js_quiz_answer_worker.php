@@ -49,7 +49,9 @@ if (is_file($signatureHelper)) {
     require_once $signatureHelper;
 }
 require_once __DIR__ . '/kirupa_article_helper.php';
+require_once __DIR__ . '/konvo_link_helper.php';
 require_once __DIR__ . '/konvo_anthropic_client.php';
+require_once __DIR__ . '/konvo_code_format_helper.php';
 
 $jsqaModelRouter = __DIR__ . '/konvo_model_router.php';
 if (is_file($jsqaModelRouter)) {
@@ -629,10 +631,12 @@ function jsqa_build_answer_raw(array $item, string $signature, string $scoreboar
     $topicTitle = trim((string)($item['topic_title'] ?? ''));
     $quizTitle = trim((string)($item['quiz_title'] ?? ''));
     $articleUrl = '';
+    $articleTitle = '';
     if (function_exists('kirupa_find_relevant_article')) {
         $article = kirupa_find_relevant_article($topicTitle . "\n" . $quizTitle . "\n" . $explanation, 1);
         if (is_array($article) && isset($article['url'])) {
             $articleUrl = trim((string)$article['url']);
+            $articleTitle = trim((string)($article['title'] ?? ''));
         }
     }
 
@@ -647,7 +651,9 @@ function jsqa_build_answer_raw(array $item, string $signature, string $scoreboar
         $lines[] = '';
         $lines[] = '**Go deeper:**';
         $lines[] = '';
-        $lines[] = $articleUrl;
+        $lines[] = function_exists('konvo_markdown_link')
+            ? konvo_markdown_link($articleUrl, $articleTitle, false)
+            : $articleUrl;
     }
 
     $body = implode("\n", $lines);
@@ -846,6 +852,9 @@ function jsqa_build_spot_answer_raw(array $solution, string $scoreboard, string 
     $body = implode("\n", $lines);
     if (trim($scoreboard) !== '') {
         $body .= "\n" . $scoreboard;
+    }
+    if (function_exists('konvo_format_inline_code')) {
+        $body = konvo_format_inline_code($body);
     }
     return normalize_signature_once($body, $signature);
 }

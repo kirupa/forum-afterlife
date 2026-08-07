@@ -16,6 +16,7 @@ require_once __DIR__ . '/konvo_anthropic_client.php';
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/konvo_soul_helper.php';
+require_once __DIR__ . '/konvo_link_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
 $konvoForumPromptHelper = __DIR__ . '/konvo_forum_prompt_helper.php';
 if (is_file($konvoForumPromptHelper)) {
@@ -767,7 +768,9 @@ function vg_build_body(array $bot, array $article, ?array $youtube, string $sign
             $lines[] = $videoIntro;
             $lines[] = '';
         }
-        $lines[] = $articleUrl;
+        $lines[] = function_exists('konvo_markdown_link')
+            ? konvo_markdown_link($articleUrl, trim((string)($article['title'] ?? '')), false)
+            : $articleUrl;
     }
     if ($youtubeUrl !== '' && $youtubeUrl !== $articleUrl) {
         $lines[] = '';

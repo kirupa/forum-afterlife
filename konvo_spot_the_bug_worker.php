@@ -11,6 +11,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/konvo_anthropic_client.php';
+require_once __DIR__ . '/konvo_code_format_helper.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -811,7 +812,7 @@ function spot_build_raw(array $case, string $signature): string
     if ($code === '') $code = "console.log('hello');";
 
     $lines = array();
-    $lines[] = $lead;
+    $lines[] = function_exists('konvo_format_inline_code') ? konvo_format_inline_code($lead) : $lead;
     $lines[] = '';
     $lines[] = '```' . $lang;
     $lines[] = $code;

@@ -23,6 +23,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/konvo_anthropic_client.php';
+require_once __DIR__ . '/konvo_code_format_helper.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -208,6 +209,7 @@ function cc_generate_challenge(array $state): array
         . "- There must be a clear, checkable correct answer. Avoid open-ended 'design something nice' prompts.\n\n"
         . "Write one challenge that is interesting but genuinely small. Favour everyday things people actually hit: layout, text overflow, array and string handling, event timing, sorting, formatting.\n"
         . "The starter block should give just enough context to answer, and must not contain the solution.\n"
+        . "When you mention code in the task text (a function signature, a sample call, an expected return value), wrap it in backticks so it renders as code.\n"
         . "Do not use an em dash anywhere.\n\n"
         . "Return ONLY JSON:\n"
         . '{"language":"css|js","title_summary":"2 to 3 words, Title Case","task":"what to build, 1 to 3 sentences, with a concrete example of expected behaviour where useful","starter":"short starter snippet or empty string","constraints":["short rule",".."],"theme":"2 to 4 word topic label"}';
@@ -316,7 +318,8 @@ function cc_build_raw(array $challenge): string
         : array();
 
     $lines = array();
-    $lines[] = $task;
+    // Code mentioned in the task text must read as code, not prose.
+    $lines[] = function_exists('konvo_format_inline_code') ? konvo_format_inline_code($task) : $task;
 
     if ($starter !== '') {
         $lines[] = '';

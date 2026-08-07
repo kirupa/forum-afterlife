@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/kirupa_article_helper.php';
+require_once __DIR__ . '/konvo_link_helper.php';
 require_once __DIR__ . '/konvo_anthropic_client.php';
+require_once __DIR__ . '/konvo_code_format_helper.php';
 
 $konvoModelRouter = __DIR__ . '/konvo_model_router.php';
 if (is_file($konvoModelRouter)) {
@@ -628,6 +630,18 @@ function konvo_enforce_banned_phrase_cleanup(string $text): string
     if (function_exists('kirupa_strip_invalid_kirupa_urls')) {
         $out = kirupa_strip_invalid_kirupa_urls((string)$out);
     }
+    
+    // Bots should link a destination's title, not paste a raw URL. Runs last so
+    // it also catches URLs the model wrote itself. No fetching here: a
+    // slug-derived title is good enough and keeps replies fast.
+    if (function_exists('konvo_linkify_bare_urls')) {
+        $out = konvo_linkify_bare_urls((string)$out, array(), false);
+    }
+    // Same idea for code: a snippet mentioned in prose should render as code.
+    if (function_exists('konvo_format_inline_code')) {
+        $out = konvo_format_inline_code((string)$out);
+    }
+
     return trim((string)$out);
 }
 
@@ -8409,7 +8423,10 @@ function konvo_run_reply(array $cfg): void
     if (is_array($article) && isset($article['title'], $article['url'])) {
         $articleUrl = konvo_resolve_valid_kirupa_url((string)$article['url'], $title, $lastRaw);
         if ($articleUrl !== '') {
-            $articleLine = "I found a related kirupa.com article that can help you go deeper into this topic:\n\n{$articleUrl}";
+            $articleLink = function_exists('konvo_markdown_link')
+                ? konvo_markdown_link($articleUrl, (string)$article['title'], false)
+                : $articleUrl;
+            $articleLine = "I found a related kirupa.com article that can help you go deeper into this topic:\n\n{$articleLink}";
         }
     }
     if ($kirupaBotCuratorMode) {

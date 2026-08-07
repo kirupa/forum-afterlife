@@ -16,6 +16,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/konvo_soul_helper.php';
 require_once __DIR__ . '/konvo_signature_helper.php';
+require_once __DIR__ . '/konvo_link_helper.php';
 $konvoForumPromptHelper = __DIR__ . '/konvo_forum_prompt_helper.php';
 if (is_file($konvoForumPromptHelper)) {
     require_once $konvoForumPromptHelper;
@@ -1538,7 +1539,7 @@ function casual_trim_body_to_limit(string $raw, int $maxBytes): string
     return $out;
 }
 
-function casual_append_source_reference(string $raw, string $sourceUrl): string
+function casual_append_source_reference(string $raw, string $sourceUrl, string $sourceTitle = ''): string
 {
     $sourceUrl = trim($sourceUrl);
     if ($sourceUrl === '' || !preg_match('/^https?:\/\/\S+$/i', $sourceUrl)) {
@@ -1550,8 +1551,15 @@ function casual_append_source_reference(string $raw, string $sourceUrl): string
         return 'source: ' . $sourceUrl;
     }
 
-    if (preg_match('/(^|\n)source:\s*https?:\/\/\S+/i', $raw)) {
-        $raw = preg_replace('/(^|\n)source:\s*https?:\/\/\S+/i', '$1source: ' . $sourceUrl, $raw, 1) ?? $raw;
+    $link = function_exists('konvo_markdown_link')
+        ? konvo_markdown_link($sourceUrl, $sourceTitle)
+        : $sourceUrl;
+
+    // Matches both the old bare-URL footer and the linked form, so existing
+    // posts and regenerated drafts are both replaced cleanly.
+    $existing = '/(^|\n)source:\s*(?:\[[^\]]*\]\(\s*)?https?:\/\/\S+/i';
+    if (preg_match($existing, $raw)) {
+        $raw = preg_replace($existing, '$1source: ' . $link, $raw, 1) ?? $raw;
         return trim($raw);
     }
 
@@ -1559,7 +1567,7 @@ function casual_append_source_reference(string $raw, string $sourceUrl): string
         return $raw;
     }
 
-    return $raw . "\n\nsource: " . $sourceUrl;
+    return $raw . "\n\nsource: " . $link;
 }
 
 function casual_has_controversial_signals(string $text): bool
@@ -1595,8 +1603,14 @@ function casual_validate_generated_topic(string $title, string $raw): array
     if ($title === '' || strlen($title) < 8) {
         return array('ok' => false, 'error' => 'title too short');
     }
-    if (strlen($title) > 88) {
-        return array('ok' => false, 'error' => 'title too long');
+    if (strlen($title) > 70) {
+        return array('ok' => false, 'error' => 'title too long (' . strlen($title) . ' chars, max 70)');
+    }
+    // Word cap is what actually stops the run-on headlines that get truncated
+    // mid-thought ("... because Western versions require").
+    $titleWords = preg_split('/\s+/', trim($title)) ?: array();
+    if (count($titleWords) > 8) {
+        return array('ok' => false, 'error' => 'title too long (' . count($titleWords) . ' words, max 8)');
     }
     if ($raw === '' || strlen($raw) < 40) {
         return array('ok' => false, 'error' => 'body too short');
@@ -1604,7 +1618,7 @@ function casual_validate_generated_topic(string $title, string $raw): array
     // Measure prose only. The trailing "source: <url>" footer is metadata, and real
     // article URLs (80-150 bytes) would otherwise eat most of the post's budget and
     // force the body to be truncated mid-thought.
-    $bodyOnly = trim(preg_replace('/\n*^source:\s*https?:\/\/\S+\s*$/im', '', $raw) ?? $raw);
+    $bodyOnly = trim(preg_replace('/\n*^source:\s*(?:\[[^\]]*\]\([^)]*\)|https?:\/\/\S+)\s*$/im', '', $raw) ?? $raw);
     if (strlen($bodyOnly) > 520) {
         return array('ok' => false, 'error' => 'body too long (' . strlen($bodyOnly) . ' chars, max 520)');
     }
@@ -1845,7 +1859,9 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
         . '{"plan_mood":"...","plan_angle":"...","plan_posting_intent":"...","plan_lane":"...","title":"...","raw":"..."}. '
         . 'Turn the seed topic into one conversational forum post with a clear opinionated observation. '
         . 'The seed comes from a live article. Do NOT summarize it like a digest. React to it like a person who just read it and has one real thought. '
-        . 'Keep titles concise, complete, and natural. '
+        . 'TITLE: write roughly a 5 word description that makes someone want to open the thread. '
+        . 'It can be a short summary, your own reinterpretation, or a question expressing curiosity. '
+        . 'Never a news headline, never a sentence that runs out of room and stops mid-thought. Hard maximum 8 words. '
         . 'Keep the body short, conversational, and human. '
         . 'Keep the body under 500 characters, roughly 3 to 5 short sentences. Say your piece and stop; do not add a wrap-up sentence. '
         . 'No code blocks, no hashtags, no sign-off line. '
@@ -1903,7 +1919,7 @@ function casual_generate_with_llm(array $bot, string $signature, array $recent, 
     }
     // Hard-enforce the prose cap before the source footer is appended.
     $raw = casual_trim_body_to_limit($raw, 520);
-    $raw = casual_append_source_reference($raw, $seedUrl);
+    $raw = casual_append_source_reference($raw, $seedUrl, $seedTopic);
     $planMood = trim((string)($obj['plan_mood'] ?? ''));
     $planAngle = trim((string)($obj['plan_angle'] ?? ''));
     $planIntent = trim((string)($obj['plan_posting_intent'] ?? ''));
